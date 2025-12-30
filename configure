@@ -349,8 +349,11 @@ External library support:
   --enable-libvpl          enable Intel oneVPL code via libvpl if libmfx is not used [no]
   --enable-libnpp          enable Nvidia Performance Primitives-based code [no]
   --enable-mmal            enable Broadcom Multi-Media Abstraction Layer (Raspberry Pi) via MMAL [no]
+  --disable-muvid          disable Nvidia CUVID support [autodetect]
   --disable-nvdec          disable Nvidia video decoding acceleration (via hwaccel) [autodetect]
   --disable-nvenc          disable Nvidia video encoding code [autodetect]
+  --disable-mtdec          disable Moore Threads video decoding acceleration (via hwaccel) [autodetect]
+  --disable-mtenc          disable Moore Threads video encoding code [autodetect]
   --enable-omx             enable OpenMAX IL code [no]
   --enable-omx-rpi         enable OpenMAX IL code for Raspberry Pi [no]
   --enable-rkmpp           enable Rockchip Media Process Platform code [no]
@@ -1985,13 +1988,18 @@ HWACCEL_AUTODETECT_LIBRARY_LIST="
     cuda
     cuda_llvm
     cuvid
+    musa
     d3d11va
     d3d12va
     dxva2
     ffnvcodec
+    ffmtcodec
     libdrm
     nvdec
     nvenc
+    muvid
+    mtdec
+    mtenc
     vaapi
     vdpau
     videotoolbox
@@ -2521,6 +2529,12 @@ HAVE_LIST="
     xmllint
     zlib_gzip
     openvino2
+    va_profile_h264_high10
+    va_profile_h264_high444
+    va_profile_av1_profile2
+    va_profile_hevc_mono
+    va_profile_avs
+    va_profile_avs2
 "
 
 # options emitted with CONFIG_ prefix but not available on the command line
@@ -3132,6 +3146,9 @@ videotoolbox_hwaccel_deps="videotoolbox pthreads"
 videotoolbox_hwaccel_extralibs="-framework QuartzCore"
 vulkan_deps="threads"
 vulkan_deps_any="libdl LoadLibrary"
+musa_deps="ffmtcodec"
+muvid_deps="ffmtcodec"
+mtdec_deps="ffmtcodec"
 
 av1_d3d11va_hwaccel_deps="d3d11va DXVA_PicParams_AV1"
 av1_d3d11va_hwaccel_select="av1_decoder"
@@ -3266,6 +3283,17 @@ wmv3_dxva2_hwaccel_select="vc1_dxva2_hwaccel"
 wmv3_nvdec_hwaccel_select="vc1_nvdec_hwaccel"
 wmv3_vaapi_hwaccel_select="vc1_vaapi_hwaccel"
 wmv3_vdpau_hwaccel_select="vc1_vdpau_hwaccel"
+cavs_vaapi_hwaccel_deps="vaapi va_profile_avs VAPictureParameterBufferAVS"
+avs2_vaapi_hwaccel_deps="vaapi va_profile_avs2 VAPictureParameterBufferAVS2"
+
+h264_mtdec_hwaccel_deps="mtdec"
+h264_mtdec_hwaccel_select="h264_decoder"
+hevc_mtdec_hwaccel_deps="mtdec"
+hevc_mtdec_hwaccel_select="hevc_decoder"
+vp9_mtdec_hwaccel_deps="mtdec"
+vp9_mtdec_hwaccel_select="hevc_decoder"
+av1_mtdec_hwaccel_deps="mtdec"
+av1_mtdec_hwaccel_select="hevc_decoder"
 
 # hardware-accelerated codecs
 mediafoundation_deps="mftransform_h MFCreateAlignedMemoryBuffer"
@@ -3301,12 +3329,16 @@ ddagrab_filter_deps="d3d11va IDXGIOutput1 DXGI_OUTDUPL_FRAME_INFO"
 amf_deps_any="libdl LoadLibrary"
 nvenc_deps="ffnvcodec"
 nvenc_deps_any="libdl LoadLibrary"
+mtenc_deps_any="libdl LoadLibrary"
 
 aac_mf_encoder_deps="mediafoundation"
 ac3_mf_encoder_deps="mediafoundation"
 av1_cuvid_decoder_deps="cuvid CUVIDAV1PICPARAMS"
 av1_mediacodec_decoder_deps="mediacodec"
 av1_mediacodec_encoder_deps="mediacodec"
+av1_muvid_decoder_deps="muvid"
+av1_mtenc_encoder_deps="mtenc"
+av1_mtenc_encoder_select="atsc_a53"
 av1_nvenc_encoder_deps="nvenc NV_ENC_PIC_PARAMS_AV1"
 av1_nvenc_encoder_select="atsc_a53"
 h263_v4l2m2m_decoder_deps="v4l2_m2m h263_v4l2_m2m"
@@ -3320,6 +3352,10 @@ h264_mediacodec_encoder_deps="mediacodec"
 h264_mediacodec_encoder_select="h264_metadata"
 h264_mf_encoder_deps="mediafoundation"
 h264_mmal_decoder_deps="mmal"
+h264_muvid_decoder_deps="muvid"
+h264_muvid_decoder_select="h264_mp4toannexb_bsf"
+h264_mtenc_encoder_deps="mtenc"
+h264_mtenc_encoder_select="atsc_a53"
 h264_nvenc_encoder_deps="nvenc"
 h264_nvenc_encoder_select="atsc_a53"
 h264_omx_encoder_deps="omx"
@@ -3339,6 +3375,10 @@ hevc_mediacodec_decoder_select="hevc_mp4toannexb_bsf hevc_parser"
 hevc_mediacodec_encoder_deps="mediacodec"
 hevc_mediacodec_encoder_select="hevc_metadata"
 hevc_mf_encoder_deps="mediafoundation"
+hevc_muvid_decoder_deps="muvid"
+hevc_muvid_decoder_select="hevc_mp4toannexb_bsf"
+hevc_mtenc_encoder_deps="mtenc"
+hevc_mtenc_encoder_select="atsc_a53"
 hevc_nvenc_encoder_deps="nvenc"
 hevc_nvenc_encoder_select="atsc_a53"
 hevc_qsv_decoder_select="hevc_mp4toannexb_bsf qsvdec"
@@ -3387,6 +3427,7 @@ vp8_vaapi_encoder_select="vaapi_encode"
 vp8_v4l2m2m_decoder_deps="v4l2_m2m vp8_v4l2_m2m"
 vp8_v4l2m2m_encoder_deps="v4l2_m2m vp8_v4l2_m2m"
 vp9_cuvid_decoder_deps="cuvid"
+vp9_muvid_decoder_deps="muvid"
 vp9_mediacodec_decoder_deps="mediacodec"
 vp9_mediacodec_encoder_deps="mediacodec"
 vp9_qsv_decoder_select="qsvdec"
@@ -7261,6 +7302,39 @@ if enabled vaapi; then
     check_type "va/va.h va/va_enc_vp8.h"  "VAEncPictureParameterBufferVP8"
     check_type "va/va.h va/va_enc_vp9.h"  "VAEncPictureParameterBufferVP9"
     check_type "va/va.h va/va_enc_av1.h"  "VAEncPictureParameterBufferAV1"
+    #
+    # Using 'VA_CHECK_VERSION' in source codes make things easy. But we have to wait
+    # until newly added VAProfile being distributed by VAAPI released version.
+    #
+    # Before or after that, we can use auto-detection to keep version compatibility.
+    # It always works.
+    #
+    disable va_profile_h264_high10 && enabled h264_vaapi_hwaccel &&
+        test_code cc va/va.h "VAProfile p = VAProfileH264High10" &&
+        enable va_profile_h264_high10
+
+    disable va_profile_h264_high444 && enabled h264_vaapi_hwaccel &&
+        test_code cc va/va.h "VAProfile p = VAProfileH264High422" &&
+        test_code cc va/va.h "VAProfile p = VAProfileH264High444" &&
+        enable va_profile_h264_high444
+
+    disable va_profile_av1_profile2 && enabled av1_vaapi_hwaccel &&
+        test_code cc va/va.h "VAProfile p = VAProfileAV1Profile2" &&
+        enable va_profile_av1_profile2
+
+    disable va_profile_hevc_mono && enabled hevc_vaapi_hwaccel &&
+        test_code cc va/va.h "VAProfile p = VAProfileHEVCMono" &&
+        enable va_profile_hevc_mono
+
+    disable va_profile_avs &&
+        test_code cc va/va.h "VAProfile p1 = VAProfileAVSJizhun, p2 = VAProfileAVSGuangdian" &&
+        enable va_profile_avs
+    disable va_profile_avs2 &&
+        test_code cc va/va.h "VAProfile p1 = VAProfileAVS2Main, p2 = VAProfileAVS2Main10" &&
+        enable va_profile_avs2
+
+    enabled va_profile_avs && check_type "va/va.h va/va_dec_avs.h" "VAPictureParameterBufferAVS"
+    enabled va_profile_avs2 && check_type "va/va.h va/va_dec_avs2.h" "VAPictureParameterBufferAVS2"
 fi
 
 if enabled_all opencl libdrm ; then
@@ -7345,6 +7419,41 @@ fi
 
 if enabled_any nvdec cuvid; then
     check_type "ffnvcodec/dynlink_cuda.h ffnvcodec/dynlink_cuviddec.h" "CUVIDAV1PICPARAMS"
+fi
+
+
+if enabled x86; then
+    case $target_os in
+        freebsd|linux)
+            ;;
+        *)
+            disable ffmtcodec mtdec muvid mtenc
+            ;;
+    esac
+elif enabled_any aarch64 ppc64 && ! enabled bigendian; then
+    case $target_os in
+        linux)
+            ;;
+        *)
+            disable ffmtcodec mtdec muvid mtenc
+            ;;
+    esac
+else
+    disable ffmtcodec mtdec muvid mtenc
+fi
+
+enabled ffmtcodec && enable musa
+
+enabled mtenc &&
+    test_cc -I$source_path <<EOF || disable mtenc
+#include <ffmtcodec/mtEncodeAPI.h>
+MT_ENCODE_API_FUNCTION_LIST flist;
+void f(void) { struct { const MTENCSTATUS status; } s[] = { { MT_ENC_SUCCESS } }; }
+int main(void) { return 0; }
+EOF
+
+if enabled_any mtdec muvid; then
+    check_type "ffmtcodec/dynlink_musa.h ffmtcodec/dynlink_muviddec.h" "MUVIDAV1PICPARAMS"
 fi
 
 enabled amf &&

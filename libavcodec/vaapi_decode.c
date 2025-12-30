@@ -405,6 +405,17 @@ static const struct {
                            H264ConstrainedBaseline),
     MAP(H264,        H264_MAIN,       H264Main    ),
     MAP(H264,        H264_HIGH,       H264High    ),
+#if HAVE_VA_PROFILE_H264_HIGH10
+    MAP(H264,        H264_HIGH_10,    H264High10  ),
+#endif
+#if HAVE_VA_PROFILE_AVS2
+    MAP(AVS2,        AVS2_MAIN,       AVS2Main    ),
+    MAP(AVS2,        AVS2_MAIN_10,    AVS2Main10  ),
+#endif
+#if HAVE_VA_PROFILE_AVS
+    MAP(CAVS,        CAVS_JIZHUN,     AVSJizhun   ),
+    MAP(CAVS,        CAVS_GUANGDIAN,  AVSGuangdian),
+#endif
 #if VA_CHECK_VERSION(0, 37, 0)
     MAP(HEVC,        HEVC_MAIN,       HEVCMain    ),
     MAP(HEVC,        HEVC_MAIN_10,    HEVCMain10  ),
@@ -515,6 +526,14 @@ static int vaapi_decode_make_config(AVCodecContext *avctx,
             if (exact_match)
                 break;
         }
+
+#if HAVE_VA_PROFILE_H264_HIGH10
+        //incase 8bit stream being decoded under VAProfileH264High10
+        if (avctx->codec_id == AV_CODEC_ID_H264 &&
+            (avctx->profile == FF_PROFILE_H264_EXTENDED || avctx->profile == FF_PROFILE_H264_BASELINE) &&
+            matched_va_profile == VAProfileH264High)
+            break;
+#endif
     }
     av_freep(&profile_list);
 
@@ -598,22 +617,27 @@ static int vaapi_decode_make_config(AVCodecContext *avctx,
         if (err < 0)
             goto fail;
 
-        frames->initial_pool_size = 1;
-        // Add per-codec number of surfaces used for storing reference frames.
-        switch (avctx->codec_id) {
-        case AV_CODEC_ID_H264:
-        case AV_CODEC_ID_HEVC:
-        case AV_CODEC_ID_AV1:
-            frames->initial_pool_size += 16;
-            break;
-        case AV_CODEC_ID_VP9:
-            frames->initial_pool_size += 8;
-            break;
-        case AV_CODEC_ID_VP8:
-            frames->initial_pool_size += 3;
-            break;
-        default:
-            frames->initial_pool_size += 2;
+        if (CONFIG_VAAPI_1)
+            frames->initial_pool_size = 0;
+        else {
+            frames->initial_pool_size = 1;
+            // Add per-codec number of surfaces used for storing reference frames.
+            switch (avctx->codec_id) {
+            case AV_CODEC_ID_H264:
+            case AV_CODEC_ID_HEVC:
+            case AV_CODEC_ID_AV1:
+            case AV_CODEC_ID_AVS2:
+                frames->initial_pool_size += 16;
+                break;
+            case AV_CODEC_ID_VP9:
+                frames->initial_pool_size += 8;
+                break;
+            case AV_CODEC_ID_VP8:
+                frames->initial_pool_size += 3;
+                break;
+            default:
+                frames->initial_pool_size += 2;
+            }
         }
     }
 

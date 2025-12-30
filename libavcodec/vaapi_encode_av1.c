@@ -37,6 +37,32 @@ typedef struct VAAPIEncodeAV1Picture {
     int slot;
 } VAAPIEncodeAV1Picture;
 
+const int qp_to_q_idx[2][52]= //8bit,10bit
+{
+    {
+        1  ,1  ,1  ,1  ,1  ,2  ,
+        3  ,4  ,6  ,7  ,9  ,11 ,
+        13 ,16 ,18 ,22 ,25 ,29 ,
+        33 ,38 ,44 ,50 ,57 ,65 ,
+        74 ,84 ,95 ,101,108,116,
+        123,130,137,143,150,156,
+        163,169,176,182,188,194,
+        201,207,213,219,225,231,
+        237,243,249,255
+    },
+    {
+        6  ,7  ,7  ,9  ,10 ,11 ,
+        12 ,13 ,15 ,17 ,18 ,20 ,
+        22 ,25 ,27 ,30 ,33 ,37 ,
+        41 ,45 ,50 ,55 ,62 ,69 ,
+        77 ,86 ,96 ,102,109,116,
+        123,130,137,143,150,157,
+        163,169,176,182,188,194,
+        201,207,213,219,225,231,
+        237,243,249,255,
+    }
+};
+
 typedef struct VAAPIEncodeAV1Context {
     VAAPIEncodeContext common;
     AV1RawOBU sh; /**< sequence header.*/
@@ -71,6 +97,7 @@ typedef struct VAAPIEncodeAV1Context {
     int q_idx_idr;
     int q_idx_p;
     int q_idx_b;
+    int qp;
 
     /** bit positions in current frame header */
     int qindex_offset;
@@ -84,6 +111,10 @@ typedef struct VAAPIEncodeAV1Context {
     int tier;
     int tile_cols, tile_rows;
     int tile_groups;
+    int enable_intra_edge_filter;
+    int separate_uv_delta_q;
+    int loop_filter_delta_enabled;
+    int reduced_tx_set;
 } VAAPIEncodeAV1Context;
 
 static void vaapi_encode_av1_trace_write_log(void *ctx,
@@ -134,7 +165,11 @@ static av_cold int vaapi_encode_av1_configure(AVCodecContext *avctx)
     priv->cbc->trace_write_callback = vaapi_encode_av1_trace_write_log;
 
     if (ctx->rc_mode->quality) {
-        priv->q_idx_p = av_clip(ctx->rc_quality, 0, AV1_MAX_QUANT);
+        if (ctx->explicit_qp > 0 && ctx->explicit_qp < 52) {
+            int bitdepth = av_pix_fmt_desc_get(priv->common.input_frames->sw_format)->comp[0].depth;
+            priv->q_idx_p = av_clip(qp_to_q_idx[bitdepth == 8 ? 0 : 1][ctx->explicit_qp], 0, AV1_MAX_QUANT);
+        } else
+            priv->q_idx_p = av_clip(ctx->rc_quality, 0, AV1_MAX_QUANT);
         if (fabs(avctx->i_quant_factor) > 0.0)
             priv->q_idx_idr =
                 av_clip((fabs(avctx->i_quant_factor) * priv->q_idx_p  +
@@ -370,6 +405,8 @@ static int vaapi_encode_av1_init_sequence_params(AVCodecContext *avctx)
     desc = av_pix_fmt_desc_get(priv->common.input_frames->sw_format);
     av_assert0(desc);
 
+    sh->enable_intra_edge_filter = priv->enable_intra_edge_filter;
+    sh->color_config.separate_uv_delta_q = priv->separate_uv_delta_q;
     sh->seq_profile  = avctx->profile;
     if (!sh->seq_force_screen_content_tools)
         sh->seq_force_integer_mv = AV1_SELECT_INTEGER_MV;
@@ -380,7 +417,7 @@ static int vaapi_encode_av1_init_sequence_params(AVCodecContext *avctx)
     sh->seq_tier[0]               = priv->tier;
     /** enable order hint and reserve maximum 8 bits for it by default. */
     sh->enable_order_hint         = 1;
-    sh->order_hint_bits_minus_1   = 7;
+    sh->order_hint_bits_minus_1   = 6;
 
     sh->color_config = (AV1RawColorConfig) {
         .high_bitdepth                  = desc->comp[0].depth == 8 ? 0 : 1,
@@ -391,8 +428,9 @@ static int vaapi_encode_av1_init_sequence_params(AVCodecContext *avctx)
                                            avctx->color_trc       != AVCOL_TRC_UNSPECIFIED ||
                                            avctx->colorspace      != AVCOL_SPC_UNSPECIFIED),
         .color_range                    = avctx->color_range == AVCOL_RANGE_JPEG,
-        .subsampling_x                  = desc->log2_chroma_w,
-        .subsampling_y                  = desc->log2_chroma_h,
+        .subsampling_x                  = desc->nb_components == 1 ? 1 : desc->log2_chroma_w,
+        .subsampling_y                  = desc->nb_components == 1 ? 1 : desc->log2_chroma_h,
+        .mono_chrome                    = desc->nb_components == 1 ? 1 : 0,
     };
 
     switch (avctx->chroma_sample_location) {
@@ -441,6 +479,25 @@ static int vaapi_encode_av1_init_sequence_params(AVCodecContext *avctx)
 
     vseq->seq_fields.bits.enable_order_hint = sh->enable_order_hint;
 
+    vseq->seq_fields.bits.enable_intra_edge_filter = sh->enable_intra_edge_filter;
+    vseq->seq_fields.bits.enable_interintra_compound = sh->enable_interintra_compound;
+    vseq->seq_fields.bits.enable_filter_intra = sh->enable_filter_intra;
+    vseq->seq_fields.bits.enable_masked_compound = sh->enable_masked_compound;
+    vseq->seq_fields.bits.enable_ref_frame_mvs = sh->enable_ref_frame_mvs;
+    vseq->seq_fields.bits.use_128x128_superblock = sh->use_128x128_superblock;
+#if VA_CHECK_VERSION(1, 15, 0)
+    if (sh->seq_profile == 2 && sh->color_config.high_bitdepth)
+        vseq->seq_fields.bits.bit_depth_minus8 = sh->color_config.twelve_bit ? 4 : 2;
+    else if(sh->color_config.high_bitdepth <= 2)
+        vseq->seq_fields.bits.bit_depth_minus8 = sh->color_config.high_bitdepth ? 2 : 0;
+    else
+        av_log(avctx, AV_LOG_WARNING, "Invalid bit depth %d.\n", sh->color_config.high_bitdepth);
+
+    vseq->seq_fields.bits.subsampling_x = sh->color_config.subsampling_x;
+    vseq->seq_fields.bits.subsampling_y = sh->color_config.subsampling_y;
+    vseq->seq_fields.bits.mono_chrome   = sh->color_config.mono_chrome;
+#endif
+
     if (!(ctx->va_rc_mode & VA_RC_CQP)) {
         vseq->bits_per_second = ctx->va_bit_rate;
         vseq->seq_fields.bits.enable_cdef = sh->enable_cdef = 1;
@@ -469,6 +526,7 @@ static int vaapi_encode_av1_init_picture_params(AVCodecContext *avctx,
     AV1RawFrameHeader                *fh = &fh_obu->obu.frame.header;
     VAEncPictureParameterBufferAV1 *vpic = pic->codec_picture_params;
     CodedBitstreamFragment          *obu = &priv->current_obu;
+    AV1RawSequenceHeader             *sh = &priv->sh.obu.sequence_header;
     VAAPIEncodePicture    *ref;
     VAAPIEncodeAV1Picture *href;
     int slot, i;
@@ -513,9 +571,9 @@ static int vaapi_encode_av1_init_picture_params(AVCodecContext *avctx,
         if (pic->nb_refs[0] > 1) {
             ref = pic->refs[0][pic->nb_refs[0] - 2];
             href = ref->priv_data;
-            fh->ref_frame_idx[3] = href->slot;
+            fh->ref_frame_idx[1] = href->slot;
             fh->ref_order_hint[href->slot] = ref->display_order - href->last_idr_frame;
-            vpic->ref_frame_ctrl_l0.fields.search_idx1 = AV1_REF_FRAME_GOLDEN;
+            vpic->ref_frame_ctrl_l0.fields.search_idx1 = AV1_REF_FRAME_LAST2; //AV1_REF_FRAME_GOLDEN;
         }
         break;
     case PICTURE_TYPE_B:
@@ -530,21 +588,22 @@ static int vaapi_encode_av1_init_picture_params(AVCodecContext *avctx,
 
         /** Use LAST_FRAME and BWDREF_FRAME for reference. */
         vpic->ref_frame_ctrl_l0.fields.search_idx0 = AV1_REF_FRAME_LAST;
-        vpic->ref_frame_ctrl_l1.fields.search_idx0 = AV1_REF_FRAME_BWDREF;
+        /* FW limitation todo check ? */
+        vpic->ref_frame_ctrl_l1.fields.search_idx0 = AV1_REF_FRAME_LAST2; //AV1_REF_FRAME_BWDREF;
 
         ref                            = pic->refs[0][pic->nb_refs[0] - 1];
         href                           = ref->priv_data;
         hpic->last_idr_frame           = href->last_idr_frame;
         fh->primary_ref_frame          = href->slot;
         fh->ref_order_hint[href->slot] = ref->display_order - href->last_idr_frame;
-        for (i = 0; i < AV1_REF_FRAME_GOLDEN; i++) {
+        for (i = 0; i < 1; i++) {
             fh->ref_frame_idx[i] = href->slot;
         }
 
         ref                            = pic->refs[1][pic->nb_refs[1] - 1];
         href                           = ref->priv_data;
         fh->ref_order_hint[href->slot] = ref->display_order - href->last_idr_frame;
-        for (i = AV1_REF_FRAME_GOLDEN; i < AV1_REFS_PER_FRAME; i++) {
+        for (i = 1; i < AV1_REFS_PER_FRAME; i++) {
             fh->ref_frame_idx[i] = href->slot;
         }
         break;
@@ -587,10 +646,20 @@ static int vaapi_encode_av1_init_picture_params(AVCodecContext *avctx,
 
     if (fh->frame_type == AV1_FRAME_KEY && fh->show_frame) {
         fh->error_resilient_mode = 1;
+        fh->refresh_frame_flags = (1 << AV1_NUM_REF_FRAMES) - 1;
     }
 
     if (fh->frame_type == AV1_FRAME_KEY || fh->error_resilient_mode)
         fh->primary_ref_frame = AV1_PRIMARY_REF_NONE;
+
+    fh->loop_filter_delta_enabled = priv->loop_filter_delta_enabled;
+    fh->reduced_tx_set = priv->reduced_tx_set;
+
+    if (fh->base_q_idx > 0)
+        fh->delta_q_present = 1;
+
+    if (sh->enable_cdef)
+        fh->cdef_damping_minus_3 = fh->base_q_idx >> 6;
 
     vpic->base_qindex          = fh->base_q_idx;
     vpic->frame_width_minus_1  = fh->frame_width_minus_1;
@@ -605,6 +674,17 @@ static int vaapi_encode_av1_init_picture_params(AVCodecContext *avctx,
     vpic->refresh_frame_flags  = fh->refresh_frame_flags;
 #endif
 
+    vpic->loop_filter_flags.bits.mode_ref_delta_enabled = fh->loop_filter_delta_enabled;
+    vpic->superres_scale_denominator = fh->coded_denom + AV1_SUPERRES_DENOM_MIN;
+    vpic->mode_control_flags.bits.delta_q_present = fh->delta_q_present;
+    vpic->mode_control_flags.bits.delta_q_res = fh->delta_q_res;
+    vpic->mode_control_flags.bits.delta_lf_present = fh->delta_lf_present;
+    vpic->mode_control_flags.bits.delta_lf_res = fh->delta_lf_res;
+    vpic->mode_control_flags.bits.delta_lf_multi = fh->delta_lf_multi;
+    for (i = 0; i < AV1_TOTAL_REFS_PER_FRAME; i++)
+        vpic->ref_deltas[i] = fh->loop_filter_ref_deltas[i];
+    vpic->cdef_damping_minus_3 = fh->cdef_damping_minus_3;
+    vpic->cdef_bits = fh->cdef_bits;
     vpic->picture_flags.bits.enable_frame_obu     = 0;
     vpic->picture_flags.bits.frame_type           = fh->frame_type;
     vpic->picture_flags.bits.reduced_tx_set       = fh->reduced_tx_set;
@@ -734,8 +814,15 @@ end:
 }
 
 static const VAAPIEncodeProfile vaapi_encode_av1_profiles[] = {
+    { AV_PROFILE_AV1_MAIN,  8, 1, 0, 0, VAProfileAV1Profile0 },
     { AV_PROFILE_AV1_MAIN,  8, 3, 1, 1, VAProfileAV1Profile0 },
     { AV_PROFILE_AV1_MAIN, 10, 3, 1, 1, VAProfileAV1Profile0 },
+    { AV_PROFILE_AV1_HIGH,  8, 3, 0, 0, VAProfileAV1Profile1 },
+    { AV_PROFILE_AV1_HIGH, 10, 3, 0, 0, VAProfileAV1Profile1 },
+#if HAVE_VA_PROFILE_AV1_PROFILE2
+    { AV_PROFILE_AV1_PROFESSIONAL,  8, 3, 1, 0, VAProfileAV1Profile2 },
+    { AV_PROFILE_AV1_PROFESSIONAL, 10, 3, 1, 0, VAProfileAV1Profile2 },
+#endif
     { AV_PROFILE_UNKNOWN }
 };
 
@@ -785,6 +872,9 @@ static av_cold int vaapi_encode_av1_init(AVCodecContext *avctx)
         av_log(avctx, AV_LOG_ERROR, "Invalid level %d\n", avctx->level);
         return AVERROR(EINVAL);
     }
+
+    if (priv->qp > 0)
+        ctx->explicit_qp = priv->qp;
 
     ret = ff_vaapi_encode_init(avctx);
     if (ret < 0)
@@ -864,6 +954,7 @@ static av_cold int vaapi_encode_av1_close(AVCodecContext *avctx)
 static const AVOption vaapi_encode_av1_options[] = {
     VAAPI_ENCODE_COMMON_OPTIONS,
     VAAPI_ENCODE_RC_OPTIONS,
+    { "qp", "use constant quantizer mode", OFFSET(qp), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 51, FLAGS, "qp" },
     { "profile", "Set profile (seq_profile)",
       OFFSET(profile), AV_OPT_TYPE_INT,
       { .i64 = AV_PROFILE_UNKNOWN }, AV_PROFILE_UNKNOWN, 0xff, FLAGS, .unit = "profile" },
@@ -873,6 +964,7 @@ static const AVOption vaapi_encode_av1_options[] = {
     { PROFILE("main",               AV_PROFILE_AV1_MAIN) },
     { PROFILE("high",               AV_PROFILE_AV1_HIGH) },
     { PROFILE("professional",       AV_PROFILE_AV1_PROFESSIONAL) },
+    { PROFILE("pro",                AV_PROFILE_AV1_PROFESSIONAL) },
 #undef PROFILE
 
     { "tier", "Set tier (seq_tier)",
@@ -907,6 +999,14 @@ static const AVOption vaapi_encode_av1_options[] = {
       OFFSET(tile_cols), AV_OPT_TYPE_IMAGE_SIZE, { .str = NULL }, 0, 0, FLAGS },
     { "tile_groups", "Number of tile groups for encoding",
       OFFSET(tile_groups), AV_OPT_TYPE_INT, { .i64 = 1 }, 1, AV1_MAX_TILE_ROWS * AV1_MAX_TILE_COLS, FLAGS },
+    { "enable_intra_edge_filter", "Enable intra edge filter",
+      OFFSET(enable_intra_edge_filter), AV_OPT_TYPE_INT, { .i64 = 1 }, 0, 1, FLAGS },
+    { "separate_uv_delta_q", "1/0 indicates that U and V planes have separate/same delta quantizer values",
+      OFFSET(separate_uv_delta_q), AV_OPT_TYPE_INT, { .i64 = 1 }, 0, 1, FLAGS },
+    { "lf_delta_enabled", "Loop filter delta enabled",
+      OFFSET(loop_filter_delta_enabled), AV_OPT_TYPE_INT, { .i64 = 1 }, 0, 1, FLAGS },
+    { "reduced_tx_set", "Equal to 1 specifies that the frame is restricted to a reduced subset of the full set of transform types",
+      OFFSET(reduced_tx_set), AV_OPT_TYPE_INT, { .i64 = 1 }, 0, 1, FLAGS },
 
     { NULL },
 };
@@ -915,6 +1015,10 @@ static const FFCodecDefault vaapi_encode_av1_defaults[] = {
     { "b",              "0"   },
     { "bf",             "2"   },
     { "g",              "120" },
+    { "i_qfactor",      "1"   },
+    { "i_qoffset",      "0"   },
+    { "b_qfactor",      "6/5" },
+    { "b_qoffset",      "0"   },
     { "qmin",           "1"   },
     { "qmax",           "255" },
     { NULL },

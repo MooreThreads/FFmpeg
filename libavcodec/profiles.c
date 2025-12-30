@@ -200,4 +200,16 @@ const AVProfile ff_evc_profiles[] = {
     { AV_PROFILE_UNKNOWN },
 };
 
+const AVProfile ff_avs2_profiles[] = {
+    { AV_PROFILE_AVS2_MAIN,         "Main"              },
+    { AV_PROFILE_AVS2_MAIN_10,      "Main 10"           },
+    { AV_PROFILE_UNKNOWN },
+};
+
+const AVProfile ff_cavs_profiles[] = {
+    { AV_PROFILE_CAVS_JIZHUN,       "Jizhun"            },
+    { AV_PROFILE_CAVS_GUANGDIAN,    "Guangdian"         },
+    { AV_PROFILE_UNKNOWN },
+};
+
 #endif /* !CONFIG_SMALL */

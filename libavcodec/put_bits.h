@@ -379,6 +379,28 @@ static inline uint8_t *put_bits_ptr(PutBitContext *s)
     return s->buf_ptr;
 }
 
+static inline void put_ns(PutBitContext *s , uint32_t len, uint32_t value)
+{
+    int l, m, i;
+
+    for (i = 7; i >= 0; i--) {
+        if (len & (1 << i))
+            break;
+    }
+
+
+    l = i + 1;
+    m = (1 << l) - len;
+
+    if (value < m)
+        put_bits(s, l - 1, value);
+    else
+    {
+        put_bits(s, l - 1, m + ((value - m) >> 1));
+        put_bits(s, 1, (value - m) & 0x1);
+    }
+}
+
 /**
  * Skip the given number of bytes.
  * PutBitContext must be flushed & aligned to a byte boundary before calling this.

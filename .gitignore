@@ -41,3 +41,10 @@
 /src
 /mapfile
 /tools/python/__pycache__/
+*.bin
+*.h264
+*.h265
+*.yuv
+*.log
+*.txt
+*.bak

@@ -94,6 +94,10 @@ av_cold int ff_h263_decode_init(AVCodecContext *avctx)
     int ret;
 
     s->out_format      = FMT_H263;
+    
+    //+clair add 2021-11-17
+    avctx->idct_algo = FF_IDCT_CNM_MP4;
+    //-clair add
 
     // set defaults
     ff_mpv_decode_init(s, avctx);

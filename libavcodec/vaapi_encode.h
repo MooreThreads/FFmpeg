@@ -39,7 +39,7 @@ struct VAAPIEncodePicture;
 
 enum {
     MAX_CONFIG_ATTRIBUTES  = 4,
-    MAX_GLOBAL_PARAMS      = 4,
+    MAX_GLOBAL_PARAMS      = 5,
     MAX_DPB_SIZE           = 16,
     MAX_PICTURE_REFERENCES = 2,
     MAX_REORDER_DELAY      = 16,
@@ -132,6 +132,7 @@ typedef struct VAAPIEncodePicture {
     int             ref_count[2];
     int             ref_removed[2];
 
+    int          temporal_id;
     int          nb_slices;
     VAAPIEncodeSlice *slices;
 
@@ -145,6 +146,8 @@ typedef struct VAAPIEncodePicture {
     char tail_data[MAX_PARAM_BUFFER_SIZE];
     /** Byte length of tail_data. */
     size_t tail_size;
+    int cache_frame_flag;
+    int repacked_flag;
 } VAAPIEncodePicture;
 
 typedef struct VAAPIEncodeProfile {
@@ -173,6 +176,13 @@ enum {
     RC_MODE_MAX = RC_MODE_AVBR,
 };
 
+enum {
+    CODED_FRAME_NONE,
+    CODED_FRAME_INDEPENDENT,
+    CODED_FRAME_MERGE_TO_NEXT,
+    CODED_FRAME_MERGE_TO_CURRENT,
+};
+
 typedef struct VAAPIEncodeRCMode {
     // Mode from above enum (RC_MODE_*).
     int mode;
@@ -191,6 +201,12 @@ typedef struct VAAPIEncodeRCMode {
     // Supports HRD/VBV parameters.
     int hrd;
 } VAAPIEncodeRCMode;
+
+typedef struct VAAPIEncodeCodedList {
+    uint8_t *data;
+    uint32_t size;
+    struct VAAPIEncodeCodedList *next;
+} VAAPIEncodeCodedList;
 
 typedef struct VAAPIEncodeContext {
     const AVClass *class;
@@ -211,6 +227,15 @@ typedef struct VAAPIEncodeContext {
 
     // Max Frame Size
     int             max_frame_size;
+
+    // Specifies gradual intra refresh mode.0:No intra refresh mode 1:Row refresh 2:Column refresh
+    int             intra_refresh_mode;
+
+    // Specifies the number of consecutive intra CTU/MB rows/columns.Vaild when intra_refresh_mode is 1 or 2
+    int             intra_refresh_arg;
+
+    // Specifies the number of temproal layers 
+    int             nb_temporal_layers;
 
     // Explicitly set RC mode (otherwise attempt to pick from
     // available modes).
@@ -296,6 +321,7 @@ typedef struct VAAPIEncodeContext {
 #if VA_CHECK_VERSION(0, 36, 0)
     VAEncMiscParameterBufferQualityLevel quality_params;
 #endif
+    VAEncMiscParameterRIR       ir_params;
 
     // Per-sequence parameter structure (VAEncSequenceParameterBuffer*).
     void           *codec_sequence_params;
@@ -311,6 +337,8 @@ typedef struct VAAPIEncodeContext {
     VAAPIEncodePicture *next_prev[MAX_PICTURE_REFERENCES];
     int                 nb_next_prev;
 
+    VAAPIEncodePicture *base_layer;
+
     // Next input order index (display order).
     int64_t         input_order;
     // Number of frames that output is behind input.
@@ -321,6 +349,8 @@ typedef struct VAAPIEncodeContext {
     int64_t         decode_delay;
     // Next output order index (in encode order).
     int64_t         output_order;
+    // Last order index (display order).
+    int64_t         last_display_order;
 
     // Timestamp handling.
     int64_t         first_pts;
@@ -374,6 +404,12 @@ typedef struct VAAPIEncodeContext {
     // encounter a frame with ROI side data.
     int             roi_warned;
 
+    /** coded frame data need to deal with next frame's data */
+    VAAPIEncodeCodedList *coded_frame_list;
+    VAAPIEncodeCodedList *coded_frame_last;
+    int    coded_frame_num;
+    int    coded_frame_type;
+
     AVFrame         *frame;
 
     // Whether the driver support vaSyncBuffer
@@ -395,6 +431,9 @@ typedef struct VAAPIEncodeContext {
 
     /** Tail data of a pic, now only used for av1 repeat frame header. */
     AVPacket        *tail_pkt;
+
+    int             enc_per_block_control_allowed;
+    int             delta_qp_block_size;
 } VAAPIEncodeContext;
 
 enum {
@@ -500,6 +539,7 @@ int ff_vaapi_encode_receive_packet(AVCodecContext *avctx, AVPacket *pkt);
 
 int ff_vaapi_encode_init(AVCodecContext *avctx);
 int ff_vaapi_encode_close(AVCodecContext *avctx);
+int ff_vaapi_encoder_get_block_size(AVCodecContext *avctx);
 
 
 #define VAAPI_ENCODE_COMMON_OPTIONS \
@@ -524,7 +564,19 @@ int ff_vaapi_encode_close(AVCodecContext *avctx);
     { "max_frame_size", \
       "Maximum frame size (in bytes)",\
       OFFSET(common.max_frame_size), AV_OPT_TYPE_INT, \
-      { .i64 = 0 }, 0, INT_MAX, FLAGS }
+      { .i64 = 0 }, 0, INT_MAX, FLAGS }, \
+    { "intra_refresh_mode", \
+      "Specifies gradual intra refresh mode.0:No intra refresh mode 1:Row refresh 2:Column refresh ", \
+       OFFSET(common.intra_refresh_mode), AV_OPT_TYPE_INT, \
+      { .i64 = 0}, 0, 2, FLAGS }, \
+    { "intra_refresh_arg", \
+      "Specifies the number of consecutive intra CTU/MB rows/columns.Vaild when intra_refresh_mode is 1 or 2", \
+       OFFSET(common.intra_refresh_arg), AV_OPT_TYPE_INT, \
+      { .i64 = 1}, 1, 511, FLAGS }, \
+      { "nb_temporal_layers", \
+      "Specifies the number of consecutive intra CTU/MB rows/columns.Vaild when intra_refresh_mode is 1 or 2", \
+       OFFSET(common.nb_temporal_layers), AV_OPT_TYPE_INT, \
+      { .i64 = 1}, 1, 4, FLAGS }
 
 #define VAAPI_ENCODE_RC_MODE(name, desc) \
     { #name, desc, 0, AV_OPT_TYPE_CONST, { .i64 = RC_MODE_ ## name }, \

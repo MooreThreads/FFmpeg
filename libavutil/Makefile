@@ -52,6 +52,7 @@ HEADERS = adler32.h                                                     \
           hwcontext_videotoolbox.h                                      \
           hwcontext_vdpau.h                                             \
           hwcontext_vulkan.h                                            \
+          hwcontext_musa.h                                              \
           iamf.h                                                        \
           imgutils.h                                                    \
           intfloat.h                                                    \
@@ -205,6 +206,7 @@ OBJS-$(CONFIG_VAAPI)                    += hwcontext_vaapi.o
 OBJS-$(CONFIG_VIDEOTOOLBOX)             += hwcontext_videotoolbox.o
 OBJS-$(CONFIG_VDPAU)                    += hwcontext_vdpau.o
 OBJS-$(CONFIG_VULKAN)                   += hwcontext_vulkan.o vulkan.o
+OBJS-$(CONFIG_MUSA)                     += hwcontext_musa.o
 
 OBJS-$(!CONFIG_VULKAN)                  += hwcontext_stub.o
 
@@ -228,6 +230,9 @@ SKIPHEADERS-$(CONFIG_VDPAU)            += hwcontext_vdpau.h
 SKIPHEADERS-$(CONFIG_VULKAN)           += hwcontext_vulkan.h vulkan.h   \
                                           vulkan_functions.h            \
                                           vulkan_loader.h
+SKIPHEADERS-$(HAVE_MUSA_H)             += hwcontext_musa.h
+SKIPHEADERS-$(CONFIG_MUSA)             += hwcontext_musa_internal.h     \
+                                          musa_check.h
 
 TESTPROGS = adler32                                                     \
             aes                                                         \

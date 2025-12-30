@@ -1557,6 +1557,12 @@ typedef struct AVCodecContext {
 #define FF_IDCT_SIMPLEARMV6   17
 #define FF_IDCT_FAAN          20
 #define FF_IDCT_SIMPLENEON    22
+#define FF_IDCT_NONE          24 /* Used by XvMC to extract IDCT coefficients with FF_IDCT_PERM_NONE */
+//+clair add 2021-11-11
+#define FF_IDCT_CNM_MP2       25
+#define FF_IDCT_CNM_MP4       26
+#define FF_IDCT_CNM_DIVX      27
+//-clair add
 #define FF_IDCT_SIMPLEAUTO    128
 
     /**
@@ -1771,6 +1777,13 @@ typedef struct AVCodecContext {
 #define FF_PROFILE_EVC_BASELINE             0
 #define FF_PROFILE_EVC_MAIN                 1
 #endif
+
+#define AV_PROFILE_AVS2_PIC                         0x12
+#define AV_PROFILE_AVS2_MAIN                        0x20
+#define AV_PROFILE_AVS2_MAIN_10                     0x22
+
+#define AV_PROFILE_CAVS_JIZHUN                      0x20
+#define AV_PROFILE_CAVS_GUANGDIAN                   0x48
 
     /**
      * Encoding level descriptor.

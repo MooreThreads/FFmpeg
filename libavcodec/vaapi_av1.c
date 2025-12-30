@@ -124,16 +124,17 @@ static int vaapi_av1_start_frame(AVCodecContext *avctx,
     if (bit_depth_idx < 0)
         goto fail;
 
-    if (apply_grain) {
-        if (ctx->tmp_frame->buf[0])
-            av_frame_unref(ctx->tmp_frame);
-        err = ff_thread_get_buffer(avctx, ctx->tmp_frame, AV_GET_BUFFER_FLAG_REF);
-        if (err < 0)
-            goto fail;
-        pic->output_surface = ff_vaapi_get_surface_id(ctx->tmp_frame);
-    } else {
-        pic->output_surface = vaapi_av1_surface_id(&s->cur_frame);
-    }
+    // if (apply_grain) {
+    //     if (ctx->tmp_frame->buf[0])
+    //         av_frame_unref(ctx->tmp_frame);
+    //     err = ff_thread_get_buffer(avctx, ctx->tmp_frame, AV_GET_BUFFER_FLAG_REF);
+    //     if (err < 0)
+    //         goto fail;
+    //     pic->output_surface = ff_vaapi_get_surface_id(ctx->tmp_frame);
+    // } else {
+    //     pic->output_surface = vaapi_av1_surface_id(&s->cur_frame);
+    // }
+    pic->output_surface = vaapi_av1_surface_id(&s->cur_frame);
 
     memset(&pic_param, 0, sizeof(VADecPictureParameterBufferAV1));
     pic_param = (VADecPictureParameterBufferAV1) {
@@ -368,21 +369,21 @@ static int vaapi_av1_end_frame(AVCodecContext *avctx)
     if (ret < 0)
         return ret;
 
-    for (int i = 0; i < AV1_NUM_REF_FRAMES; i++) {
-        if (header->refresh_frame_flags & (1 << i)) {
-            if (ctx->ref_tab[i].frame->buf[0])
-                av_frame_unref(ctx->ref_tab[i].frame);
+    // for (int i = 0; i < AV1_NUM_REF_FRAMES; i++) {
+    //     if (header->refresh_frame_flags & (1 << i)) {
+    //         if (ctx->ref_tab[i].frame->buf[0])
+    //             av_frame_unref(ctx->ref_tab[i].frame);
 
-            if (apply_grain) {
-                ret = av_frame_ref(ctx->ref_tab[i].frame, ctx->tmp_frame);
-                if (ret < 0)
-                    return ret;
-                ctx->ref_tab[i].valid = 1;
-            } else {
-                ctx->ref_tab[i].valid = 0;
-            }
-        }
-    }
+    //         if (apply_grain) {
+    //             ret = av_frame_ref(ctx->ref_tab[i].frame, ctx->tmp_frame);
+    //             if (ret < 0)
+    //                 return ret;
+    //             ctx->ref_tab[i].valid = 1;
+    //         } else {
+    //             ctx->ref_tab[i].valid = 0;
+    //         }
+    //     }
+    // }
 
     return 0;
 }

@@ -810,6 +810,14 @@ av_cold int ff_cavs_init(AVCodecContext *avctx)
     if (!h->cur.f || !h->DPB[0].f || !h->DPB[1].f)
         return AVERROR(ENOMEM);
 
+    h->out[0].f = av_frame_alloc();
+    h->out[1].f = av_frame_alloc();
+    h->out[2].f = av_frame_alloc();
+    if (!h->out[0].f || !h->out[1].f || !h->out[2].f) {
+        ff_cavs_end(avctx);
+        return AVERROR(ENOMEM);
+    }
+
     h->luma_scan[0]                     = 0;
     h->luma_scan[1]                     = 8;
     h->intra_pred_l[INTRA_L_VERT]       = intra_pred_vert;
@@ -839,6 +847,10 @@ av_cold int ff_cavs_end(AVCodecContext *avctx)
     av_frame_free(&h->cur.f);
     av_frame_free(&h->DPB[0].f);
     av_frame_free(&h->DPB[1].f);
+
+    av_frame_free(&h->out[0].f);
+    av_frame_free(&h->out[1].f);
+    av_frame_free(&h->out[2].f);
 
     av_freep(&h->top_qp);
     av_freep(&h->top_mv[0]);

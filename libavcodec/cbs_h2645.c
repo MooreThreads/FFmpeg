@@ -1369,6 +1369,13 @@ static int cbs_h264_write_nal_unit(CodedBitstreamContext *ctx,
                 return err;
         }
         break;
+    case H264_NAL_PREFIX:
+        {
+            err = cbs_h264_write_svc_extension(ctx, pbc, unit->content);
+            if (err < 0)
+                return err;
+        }
+        break;
 
     default:
         av_log(ctx->log_ctx, AV_LOG_ERROR, "Write unimplemented for "
@@ -2171,6 +2178,12 @@ static const SEIMessageTypeDescriptor cbs_sei_h264_types[] = {
         1, 0,
         sizeof(H264RawSEIDisplayOrientation),
         SEI_MESSAGE_RW(h264, sei_display_orientation),
+    },
+    {
+        SEI_TYPE_SCALABILITY_INFO,
+        1, 0,
+        sizeof(H264RawSEIScalabilityInfo),
+        SEI_MESSAGE_RW(h264, sei_scalability_info),
     },
     SEI_MESSAGE_TYPE_END
 };

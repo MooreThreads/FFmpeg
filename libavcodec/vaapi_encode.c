@@ -37,7 +37,13 @@ const AVCodecHWConfigInternal *const ff_vaapi_encode_hw_configs[] = {
     NULL,
 };
 
-static const char * const picture_type_name[] = { "IDR", "I", "P", "B" };
+static const char *const picture_type_name[] = {"IDR", "I", "P", "B"};
+
+static const int hierarchy_p[4][8] = {
+{0, -1, -1, -1, -1, -1, -1, -1}, 
+{0, 1, -1, -1, -1, -1, -1, -1}, 
+{0, 2, 1, 2, -1, -1, -1, -1}, 
+{0, 3, 2, 3, 1, 3, 2, 3}};
 
 static int vaapi_encode_make_packed_header(AVCodecContext *avctx,
                                            VAAPIEncodePicture *pic,
@@ -63,7 +69,7 @@ static int vaapi_encode_make_packed_header(AVCodecContext *avctx,
                          sizeof(params), 1, &params, &param_buffer);
     if (vas != VA_STATUS_SUCCESS) {
         av_log(avctx, AV_LOG_ERROR, "Failed to create parameter buffer "
-               "for packed header (type %d): %d (%s).\n",
+                                    "for packed header (type %d): %d (%s).\n",
                type, vas, vaErrorStr(vas));
         return AVERROR(EIO);
     }
@@ -74,7 +80,7 @@ static int vaapi_encode_make_packed_header(AVCodecContext *avctx,
                          (bit_len + 7) / 8, 1, data, &data_buffer);
     if (vas != VA_STATUS_SUCCESS) {
         av_log(avctx, AV_LOG_ERROR, "Failed to create data buffer "
-               "for packed header (type %d): %d (%s).\n",
+                                    "for packed header (type %d): %d (%s).\n",
                type, vas, vaErrorStr(vas));
         return AVERROR(EIO);
     }
@@ -263,6 +269,66 @@ static int vaapi_encode_make_tile_slice(AVCodecContext *avctx,
     return 0;
 }
 
+static int ff_vaapi_encode_update_br(AVCodecContext *avctx, VAAPIEncodePicture *pic)
+{
+    VAAPIEncodeContext *ctx = avctx->priv_data;
+    int64_t rc_bits_per_second;
+    int     rc_target_percentage;
+    int update_flag = 0;
+    int err = 0;
+
+    /* bitrate update logic just used for cbr or vbr */
+    if (((ctx->va_rc_mode == VA_RC_CBR) && (avctx->bit_rate != ctx->va_bit_rate))
+        || ((ctx->va_rc_mode == VA_RC_VBR) && (avctx->bit_rate * 100 != ctx->va_bit_rate * ctx->rc_params.target_percentage)))
+    {
+        if (ctx->va_rc_mode == VA_RC_CBR) {
+            rc_bits_per_second = avctx->bit_rate;
+            rc_target_percentage = 100;
+            update_flag = 1;
+        } else if (ctx->va_rc_mode == VA_RC_VBR) {
+            /* VBR, refer to vaapi_encode_init_rate_control() */
+            if (avctx->rc_max_rate) {
+                rc_bits_per_second   = avctx->rc_max_rate;
+                rc_target_percentage = (avctx->bit_rate * 100) / avctx->rc_max_rate;
+            } else {
+                rc_bits_per_second   = 2 * avctx->bit_rate;
+                rc_target_percentage = 50;
+            }
+            update_flag = 1;
+        }
+
+        if (update_flag) {
+            av_log(avctx, AV_LOG_WARNING, "update br: %d -> %ld, cur_rc_mode=%d, pic_type=%d\n",
+                    ctx->rc_params.bits_per_second, rc_bits_per_second, ctx->va_rc_mode, pic->type);
+            ctx->rc_params.bits_per_second = rc_bits_per_second;
+            ctx->rc_params.target_percentage = rc_target_percentage;
+
+            /* Do not configure MiscRateControl buffer again when idr, which has been existed in global_params,
+             * and will send two MiscRateControl buffers to video driver by vaRenderPicture.
+             * Hence we just need modify RateControl data in global_params and send one.
+             * But for none-idr, need make a new misc param, because global_params not be pass to video driver.
+             **/
+            if (pic->type == PICTURE_TYPE_IDR) {
+                for (int i=0; i<ctx->nb_global_params; i++) {
+                    if (ctx->global_params_type[i] == VAEncMiscParameterTypeRateControl) {
+                        VAEncMiscParameterRateControl *rc_param = ctx->global_params[i];
+                        rc_param->bits_per_second = rc_bits_per_second;
+                        rc_param->target_percentage = rc_target_percentage;
+                        break;
+                    }
+                }
+            } else {
+                err = vaapi_encode_make_misc_param_buffer(avctx, pic,
+                                                          VAEncMiscParameterTypeRateControl,
+                                                          &ctx->rc_params,
+                                                          sizeof(ctx->rc_params));
+            }
+            ctx->va_bit_rate = rc_bits_per_second;
+        }
+    }
+    return err;
+}
+
 static int vaapi_encode_issue(AVCodecContext *avctx,
                               VAAPIEncodePicture *pic)
 {
@@ -310,7 +376,7 @@ static int vaapi_encode_issue(AVCodecContext *avctx,
     av_log(avctx, AV_LOG_DEBUG, "Input surface is %#x.\n", pic->input_surface);
 
     pic->recon_image = av_frame_alloc();
-    if (!pic->recon_image) {
+        if (!pic->recon_image) {
         err = AVERROR(ENOMEM);
         goto fail;
     }
@@ -351,6 +417,10 @@ static int vaapi_encode_issue(AVCodecContext *avctx,
                                              ctx->codec->sequence_params_size);
         if (err < 0)
             goto fail;
+    }
+
+    if (ff_vaapi_encode_update_br(avctx, pic)) {
+        av_log(avctx, AV_LOG_WARNING, "Failed to update bit-rate when br change!\n");
     }
 
     if (pic->type == PICTURE_TYPE_IDR) {
@@ -594,6 +664,30 @@ static int vaapi_encode_issue(AVCodecContext *avctx,
     }
 #endif
 
+#if VA_CHECK_VERSION(1, 15, 0)
+    sd = av_frame_get_side_data(pic->input_image,
+                                AV_FRAME_DATA_QP_DELTA_MAP);
+    if (sd && ctx->enc_per_block_control_allowed) {
+        int w = pic->input_image->width / ctx->delta_qp_block_size;
+        int h = pic->input_image->height / ctx->delta_qp_block_size;
+
+        if (pic->input_image->width % ctx->delta_qp_block_size)
+            w += 1;
+        if (pic->input_image->height % ctx->delta_qp_block_size)
+            h += 1;
+        if (w*h != sd->size) {
+            av_log(avctx, AV_LOG_ERROR, "w: %d, h: %d, sd data size: %ld\n", w, h, sd->size);
+            goto fail;
+        }
+        err = vaapi_encode_make_param_buffer(avctx, pic,
+                                             VAEncDeltaQpPerBlockBufferType,
+                                             sd->data,
+                                             sd->size);
+        if (err < 0)
+            goto fail;
+    }
+#endif
+
     vas = vaBeginPicture(ctx->hwctx->display, ctx->va_context,
                          pic->input_surface);
     if (vas != VA_STATUS_SUCCESS) {
@@ -704,6 +798,74 @@ static int vaapi_encode_set_output_property(AVCodecContext *avctx,
     return 0;
 }
 
+static int vaapi_encode_set_pkt_timestamp(AVCodecContext *avctx, VAAPIEncodePicture *pic, AVPacket *pkt)
+{
+    VAAPIEncodeContext *ctx = avctx->priv_data;
+
+    if (avctx->codec_id == AV_CODEC_ID_AV1) {
+        pkt->dts = pkt->pts = ctx->first_pts + ctx->output_order;
+        goto end;
+    }
+
+    /** pic should not be null except AV1. */
+    av_assert0(pic);
+
+    if (ctx->output_delay == 0) {
+        pkt->dts = pkt->pts;
+    } else if (pic->encode_order < ctx->decode_delay) {
+        if (ctx->ts_ring[pic->encode_order] < INT64_MIN + ctx->dts_pts_diff)
+            pkt->dts = INT64_MIN;
+        else
+            pkt->dts = ctx->ts_ring[pic->encode_order] - ctx->dts_pts_diff;
+    } else {
+        pkt->dts = ctx->ts_ring[(pic->encode_order - ctx->decode_delay) %
+                                (3 * ctx->output_delay)];
+    }
+
+end:
+    av_log(avctx, AV_LOG_DEBUG, "Output packet: size %u bytes, pts %"PRId64", dts %"PRId64".\n",
+           pkt->size, pkt->pts, pkt->dts);
+    return 0;
+}
+
+static void vaapi_delete_coded_list(VAAPIEncodeContext *ctx)
+{
+    VAAPIEncodeCodedList *p_list = ctx->coded_frame_list;
+    ctx->coded_frame_list = p_list->next;
+    av_free(p_list->data);
+    av_free(p_list);
+    ctx->coded_frame_num--;
+    if (!ctx->coded_frame_list)
+        ctx->coded_frame_last = NULL;
+}
+
+static int vaapi_repack_coded_list_last(VAAPIEncodeCodedList *p_list_last, int add_size)
+{
+    uint8_t *p_temp = av_malloc(p_list_last->size);
+    int total_size = add_size;
+
+    if (!p_temp)
+        return AVERROR(ENOMEM);
+    memcpy(p_temp, p_list_last->data, p_list_last->size);
+
+    total_size += p_list_last->size;
+    p_list_last->data = av_realloc(p_list_last->data, total_size);
+    if (!p_list_last->data) {
+        av_free(p_temp);
+        return AVERROR(ENOMEM);
+    }
+    memcpy(p_list_last->data, p_temp, p_list_last->size);
+    //ptr = p_list_last->data + p_list_last->size;
+    av_free(p_temp);
+    p_list_last->size = total_size;
+    return 0;
+}
+
+#ifdef DEBUG_OUTPUT_SVC
+static FILE* t0 = NULL;
+static FILE* t1 = NULL;
+static FILE* t2 = NULL;
+#endif
 static int vaapi_encode_get_coded_buffer_size(AVCodecContext *avctx, VABufferID buf_id)
 {
     VAAPIEncodeContext *ctx = avctx->priv_data;
@@ -759,6 +921,33 @@ static int vaapi_encode_get_coded_buffer_data(AVCodecContext *avctx,
         memcpy(*dst, buf->buf, buf->size);
         *dst += buf->size;
     }
+
+#ifdef DEBUG_OUTPUT_SVC
+    if(ctx->nb_temporal_layers>2){
+        char f0[0xff] = "t0.h264";
+        char f1[0xff] = "t1.h264";
+        char f2[0xff] = "t2.h264";
+
+        if(t0 == NULL)
+            t0 = fopen(f0,"wb");
+        if(t1 == NULL)
+            t1 = fopen(f1,"wb");
+        if(t2 == NULL)
+            t2 = fopen(f2,"wb");
+
+        if(pic->temporal_id == 0){
+            fwrite(pkt->data,1,total_size,t0);
+        }
+
+        if(pic->temporal_id <= 1){
+            fwrite(pkt->data,1,total_size,t1);
+        }
+
+        if(pic->temporal_id <= 2){
+            fwrite(pkt->data,1,total_size,t2);
+        }
+    }
+#endif
 
     vas = vaUnmapBuffer(ctx->hwctx->display, buf_id);
     if (vas != VA_STATUS_SUCCESS) {
@@ -1031,8 +1220,12 @@ static void vaapi_encode_set_b_pictures(AVCodecContext *avctx,
             vaapi_encode_add_ref(avctx, pic, end,   1, 1, 0);
             vaapi_encode_add_ref(avctx, pic, prev,  0, 0, 1);
 
-            for (ref = end->refs[1][0]; ref; ref = ref->refs[1][0])
+            for (ref = end->refs[1][0]; end->type != PICTURE_TYPE_P && ref; ref = ref->refs[1][0]) {
                 vaapi_encode_add_ref(avctx, pic, ref, 0, 1, 0);
+                if(ref->type == PICTURE_TYPE_P)
+                    break;
+            }
+               
         }
         *last = prev;
 
@@ -1054,8 +1247,11 @@ static void vaapi_encode_set_b_pictures(AVCodecContext *avctx,
         vaapi_encode_add_ref(avctx, pic, end,   1, 1, 0);
         vaapi_encode_add_ref(avctx, pic, prev,  0, 0, 1);
 
-        for (ref = end->refs[1][0]; ref; ref = ref->refs[1][0])
+        for (ref = end->refs[1][0]; end->type != PICTURE_TYPE_P && ref; ref = ref->refs[1][0]) {
             vaapi_encode_add_ref(avctx, pic, ref, 0, 1, 0);
+            if(ref->type == PICTURE_TYPE_P)
+                break;
+        }
 
         if (i > 1)
             vaapi_encode_set_b_pictures(avctx, start, pic, pic,
@@ -1221,33 +1417,106 @@ static int vaapi_encode_pick_next(AVCodecContext *avctx,
         av_assert0(start);
         ctx->gop_counter += 1 + b_counter;
     }
-    pic->is_reference = 1;
+
     *pic_out = pic;
 
-    vaapi_encode_add_ref(avctx, pic, pic, 0, 1, 0);
-    if (pic->type != PICTURE_TYPE_IDR) {
-        // TODO: apply both previous and forward multi reference for all vaapi encoders.
-        // And L0/L1 reference frame number can be set dynamically through query
-        // VAConfigAttribEncMaxRefFrames attribute.
-        if (avctx->codec_id == AV_CODEC_ID_AV1) {
-            for (i = 0; i < ctx->nb_next_prev; i++)
-                vaapi_encode_add_ref(avctx, pic, ctx->next_prev[i],
-                                     pic->type == PICTURE_TYPE_P,
-                                     b_counter > 0, 0);
-        } else
-            vaapi_encode_add_ref(avctx, pic, start,
-                                 pic->type == PICTURE_TYPE_P,
-                                 b_counter > 0, 0);
+    if (ctx->nb_temporal_layers == 1) {
+        pic->is_reference = 1;
+        vaapi_encode_add_ref(avctx, pic, pic, 0, 1, 0);
+        if (pic->type != PICTURE_TYPE_IDR) {
+            // TODO: apply both previous and forward multi reference for all vaapi encoders.
+            // And L0/L1 reference frame number can be set dynamically through query
+            // VAConfigAttribEncMaxRefFrames attribute.
+            if (avctx->codec_id == AV_CODEC_ID_AV1) {
+                for (i = 0; i < ctx->nb_next_prev; i++)
+                    vaapi_encode_add_ref(avctx, pic, ctx->next_prev[i],
+                                        pic->type == PICTURE_TYPE_P,
+                                        b_counter > 0, 0);
+            } else {
+                vaapi_encode_add_ref(avctx, pic, start,
+                                    pic->type == PICTURE_TYPE_P,
+                                    b_counter > 0 || avctx->refs == 2, 0);
+                if (avctx->refs == 2 && pic->type == PICTURE_TYPE_P) {
+                    VAAPIEncodePicture **l0_list = pic->refs[0];
+                    if (l0_list[0]->nb_refs != 0 && l0_list[0]->refs[0][0] != NULL) {
+                        vaapi_encode_add_ref(avctx, pic, l0_list[0]->refs[0][0], 1, 1, 0);
+                    }
+                }
+            }
 
-        vaapi_encode_add_ref(avctx, pic, ctx->next_prev[ctx->nb_next_prev - 1], 0, 0, 1);
-    }
-
-    if (b_counter > 0) {
-        vaapi_encode_set_b_pictures(avctx, start, pic, pic, 1,
-                                    &prev);
+            vaapi_encode_add_ref(avctx, pic, ctx->next_prev[ctx->nb_next_prev - 1], 0, 0, 1);
+        }
     } else {
-        prev = pic;
+        int hierarchy_idx = ctx->nb_temporal_layers - 1;
+        int group_size = 1 << (ctx->nb_temporal_layers - 1);
+        int group_idx = (ctx->gop_counter - 1) % group_size;
+        pic->temporal_id = hierarchy_p[hierarchy_idx][group_idx];
+
+        if(pic->temporal_id == ctx->nb_temporal_layers - 1) {
+            vaapi_encode_add_ref(avctx, pic, ctx->next_prev[ctx->nb_next_prev - 1], 1, 1, 1);
+        } else if(pic->temporal_id < ctx->nb_temporal_layers - 1 
+                    && pic->type == PICTURE_TYPE_P) {
+            vaapi_encode_add_ref(avctx, pic, pic, 0, 1, 0);
+            for (VAAPIEncodePicture *temp_ref = ctx->next_prev[ctx->nb_next_prev - 1]; temp_ref; temp_ref = temp_ref->refs[0][0]) {
+                if(temp_ref->temporal_id <= pic->temporal_id) {
+                    vaapi_encode_add_ref(avctx, pic, temp_ref, 1, 1, 0);
+                    av_log(avctx, AV_LOG_DEBUG, "Ref pic:%ld/%d Current Pic:%ld/%d.\n", start->pts, start->temporal_id, pic->pts, pic->temporal_id);
+                    break;
+                }
+            }
+            vaapi_encode_add_ref(avctx, pic, ctx->next_prev[ctx->nb_next_prev - 1], 0, 0, 1);
+            pic->is_reference = 1;
+            if(pic->temporal_id == 0){
+                if(ctx->base_layer)
+                    --ctx->base_layer->ref_count[0];
+                ctx->base_layer = pic;
+                ++ctx->base_layer->ref_count[0];
+            }
+        } else {
+            vaapi_encode_add_ref(avctx, pic, pic, 0, 1, 0);
+            pic->is_reference = 1;
+                if(ctx->base_layer)
+                    --ctx->base_layer->ref_count[0];
+                ctx->base_layer = pic;
+                ++ctx->base_layer->ref_count[0];
+        }
     }
+
+    if (ctx->nb_temporal_layers == 1) {
+        if (b_counter > 0) {
+            vaapi_encode_set_b_pictures(avctx, start, pic, pic, 1, &prev);
+            if (avctx->refs == 2 && ctx->max_b_depth > 1) {
+                VAAPIEncodePicture *b_pic;
+                if (avctx->codec_id == AV_CODEC_ID_H264) {
+                    uint32_t len = 0, i = 1;
+                    for (b_pic = start->next; b_pic != pic; b_pic = b_pic->next) ++len;
+                    for (b_pic = start->next; 2 * i < len; b_pic = b_pic->next, i++);
+                    for (b_pic = b_pic->next; b_pic != pic; b_pic = b_pic->next) {
+                    if (b_pic->is_reference)
+                        vaapi_encode_add_ref(avctx, b_pic, start, 0, 1, 0);
+                    }
+                } else if (avctx->codec_id == AV_CODEC_ID_HEVC) {
+                    for (b_pic = start->next; b_pic != pic; b_pic = b_pic->next) {
+                        uint32_t i = 0;
+                        for (; i < b_pic->nb_dpb_pics; i++) {
+                            if (b_pic->dpb[i] == start) break;
+                        }
+                        if (i == b_pic->nb_dpb_pics) {
+                            vaapi_encode_add_ref(avctx, b_pic, start, 0, 1, 0);
+                            av_log(avctx, AV_LOG_DEBUG,
+                                "Push second pic %" PRId64
+                                " into"
+                                " pic %" PRId64 " dpb as P ref.\n",
+                                start->display_order, b_pic->display_order);
+                        }
+                    }
+                }
+            }
+        } else
+            prev = pic;
+    } else if (pic->is_reference)
+        prev = pic;
+
     vaapi_encode_add_next_prev(avctx, prev);
 
     return 0;
@@ -1262,13 +1531,18 @@ static int vaapi_encode_clear_old(AVCodecContext *avctx)
 
     // Remove direct references once each picture is complete.
     for (pic = ctx->pic_start; pic; pic = pic->next) {
-        if (pic->encode_complete && pic->next)
-            vaapi_encode_remove_refs(avctx, pic, 0);
-    }
+        if (pic->encode_complete){
+            if(ctx->nb_temporal_layers > 1)
+                vaapi_encode_remove_refs(avctx, pic, 0);
+            else if(pic->next)
+                vaapi_encode_remove_refs(avctx, pic, 0);
+        }
+          
+    }   
 
     // Remove indirect references once a picture has no direct references.
     for (pic = ctx->pic_start; pic; pic = pic->next) {
-        if (pic->encode_complete && pic->ref_count[0] == 0)
+        if (pic->encode_complete && pic->ref_count[0] == 0) 
             vaapi_encode_remove_refs(avctx, pic, 1);
     }
 
@@ -1280,8 +1554,16 @@ static int vaapi_encode_clear_old(AVCodecContext *avctx)
             av_assert0(pic->ref_removed[0] && pic->ref_removed[1]);
             if (prev)
                 prev->next = next;
-            else
+            else 
                 ctx->pic_start = next;
+
+            if(ctx-> nb_temporal_layers > 1) {
+                if(pic == ctx->pic_end && prev)
+                    ctx->pic_end = prev;
+                else
+                    ctx->pic_end = ctx->pic_start;
+            }
+            
             vaapi_encode_free(avctx, pic);
         } else {
             prev = pic;
@@ -1425,9 +1707,18 @@ start:
         return err;
 
     if (!ctx->pic_start) {
-        if (ctx->end_of_stream)
+        if (ctx->end_of_stream) {
+
+#ifdef DEBUG_OUTPUT_SVC
+            if(t0)
+                fclose(t0);
+            if(t1)
+                fclose(t1);
+            if(t2)
+                fclose(t2);
+#endif
             return AVERROR_EOF;
-        else
+        } else
             return AVERROR(EAGAIN);
     }
 
@@ -1458,8 +1749,14 @@ start:
         ctx->encode_order = pic->encode_order + 1;
     } else {
         err = vaapi_encode_pick_next(avctx, &pic);
-        if (err < 0)
+        if (err < 0 && err != AVERROR_EOF)
             return err;
+        if (!pic) {
+            if (ctx->coded_frame_type)
+                return vaapi_encode_output(avctx, pic, pkt);
+            else
+                return AVERROR_EOF;
+        }
         av_assert0(pic);
 
         pic->encode_order = ctx->encode_order++;
@@ -1472,7 +1769,7 @@ start:
     }
 
     err = vaapi_encode_output(avctx, pic, pkt);
-    if (err < 0) {
+    if (err < 0 && err != AVERROR(EAGAIN)) {
         av_log(avctx, AV_LOG_ERROR, "Output failed: %d.\n", err);
         return err;
     }
@@ -1519,6 +1816,7 @@ static const VAAPIEncodeRTFormat vaapi_encode_rt_formats[] = {
     { "YUV400",    VA_RT_FORMAT_YUV400,        8, 1,      },
     { "YUV420",    VA_RT_FORMAT_YUV420,        8, 3, 1, 1 },
     { "YUV422",    VA_RT_FORMAT_YUV422,        8, 3, 1, 0 },
+    { "YUV440",    VA_RT_FORMAT_YUV422,        8, 3, 0, 1 },
 #if VA_CHECK_VERSION(1, 2, 0)
     { "YUV420_12", VA_RT_FORMAT_YUV420_12,    12, 3, 1, 1 },
     { "YUV422_10", VA_RT_FORMAT_YUV422_10,    10, 3, 1, 0 },
@@ -1532,6 +1830,7 @@ static const VAAPIEncodeRTFormat vaapi_encode_rt_formats[] = {
 #if VA_CHECK_VERSION(0, 38, 1)
     { "YUV420_10", VA_RT_FORMAT_YUV420_10BPP, 10, 3, 1, 1 },
 #endif
+    { "RGBA",      VA_RT_FORMAT_RGB32,         8, 4, 0, 0 },
 };
 
 static const VAEntrypoint vaapi_encode_entrypoints_normal[] = {
@@ -2303,6 +2602,12 @@ static av_cold int vaapi_encode_init_gop_structure(AVCodecContext *avctx)
         ctx->gop_per_idr = 1;
     }
 
+    //Now we must set intra period as multipe of gop size to get better quailty in h265
+    //h264 dont need do this
+    if(avctx->codec_id == AV_CODEC_ID_H265 && ctx->gop_size % (ctx->b_per_p+1) != 0){
+        ctx->gop_size = ctx->gop_size + (ctx->gop_size % (ctx->b_per_p+1));
+    }
+
     return 0;
 }
 
@@ -2643,6 +2948,90 @@ static av_cold int vaapi_encode_init_roi(AVCodecContext *avctx)
     return 0;
 }
 
+static av_cold int vaapi_encode_init_delta_qp_perblock(AVCodecContext *avctx)
+{
+#if VA_CHECK_VERSION(1, 15, 0)
+    VAAPIEncodeContext *ctx = avctx->priv_data;
+    VAStatus vas;
+    VAConfigAttrib attr = { VAConfigAttribEncPerBlockControl };
+
+    vas = vaGetConfigAttributes(ctx->hwctx->display,
+                                ctx->va_profile,
+                                ctx->va_entrypoint,
+                                &attr, 1);
+    if (vas != VA_STATUS_SUCCESS) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to query encoder per block control "
+               "config attribute: %d (%s).\n", vas, vaErrorStr(vas));
+        return AVERROR_EXTERNAL;
+    }
+
+    if (attr.value == VA_ATTRIB_NOT_SUPPORTED) {
+        ctx->enc_per_block_control_allowed = 0;
+    } else {
+        VAConfigAttribValEncPerBlockControl block_control = {
+            .value = attr.value,
+        };
+
+        ctx->enc_per_block_control_allowed = block_control.bits.delta_qp_support;
+        ctx->delta_qp_block_size = 1<<block_control.bits.log2_delta_qp_block_size;
+    }
+#endif
+    return 0;
+}
+
+av_cold int ff_vaapi_encoder_get_block_size(AVCodecContext *avctx)
+{
+    VAAPIEncodeContext *ctx = avctx->priv_data;
+    if (ctx)
+        return ctx->delta_qp_block_size;
+    else
+        return 0;
+}
+
+static av_cold int vaapi_encode_init_intra_refresh_param(AVCodecContext *avctx)
+{
+    VAAPIEncodeContext *ctx = avctx->priv_data;
+    VAStatus vas;
+    VAConfigAttrib attr = { VAConfigAttribEncIntraRefresh };
+
+    vas = vaGetConfigAttributes(ctx->hwctx->display,
+                                ctx->va_profile,
+                                ctx->va_entrypoint,
+                                &attr, 1);
+    if (vas != VA_STATUS_SUCCESS) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to query intra refresh "
+               "config attribute: %d (%s).\n", vas, vaErrorStr(vas));
+        return AVERROR_EXTERNAL;
+    }
+
+    if (attr.value == VA_ATTRIB_NOT_SUPPORTED)
+    {
+        av_log(avctx, AV_LOG_WARNING, "Driver doesnt support intra refrsh");
+        ctx->intra_refresh_mode = 0;
+        ctx->intra_refresh_arg = 1;
+    }
+    else
+    {
+        ctx->ir_params = (VAEncMiscParameterRIR){
+            .rir_flags.bits.enable_rir_column = ctx->intra_refresh_mode == 2,
+            .rir_flags.bits.enable_rir_row = ctx->intra_refresh_mode == 1,
+            .rir_flags.bits.reserved = ctx->intra_refresh_arg,
+        };
+
+        av_log(avctx, AV_LOG_DEBUG, "Intra_refresh_mode:%d intra_refresh_arg:%d\n",
+               ctx->intra_refresh_mode, ctx->intra_refresh_arg);
+        av_log(avctx, AV_LOG_DEBUG, "Enable_rir_column:%d enable_rir_row:%d\n",
+               ctx->ir_params.rir_flags.bits.enable_rir_column,
+               ctx->ir_params.rir_flags.bits.enable_rir_row);
+
+        vaapi_encode_add_global_param(avctx,
+                                      VAEncMiscParameterTypeRIR,
+                                      &ctx->ir_params,
+                                      sizeof(ctx->ir_params));
+    }
+    return 0;
+}
+
 static void vaapi_encode_free_output_buffer(FFRefStructOpaque opaque,
                                             void *obj)
 {
@@ -2851,6 +3240,14 @@ av_cold int ff_vaapi_encode_init(AVCodecContext *avctx)
     err = vaapi_encode_init_roi(avctx);
     if (err < 0)
         goto fail;
+    
+    err = vaapi_encode_init_intra_refresh_param(avctx);
+    if(err < 0)
+        goto fail;
+
+    err = vaapi_encode_init_delta_qp_perblock(avctx);
+    if(err < 0)
+        goto fail;
 
     if (avctx->compression_level >= 0) {
         err = vaapi_encode_init_quality(avctx);
@@ -3014,6 +3411,15 @@ av_cold int ff_vaapi_encode_close(AVCodecContext *avctx)
     av_freep(&ctx->codec_sequence_params);
     av_freep(&ctx->codec_picture_params);
     av_fifo_freep2(&ctx->encode_fifo);
+    while (ctx->coded_frame_list)
+    {
+        VAAPIEncodeCodedList *p_list = ctx->coded_frame_list;
+        av_free(p_list->data);
+        ctx->coded_frame_list = p_list->next;
+        av_free(p_list);
+    }
+    ctx->coded_frame_last = NULL;
+    ctx->coded_frame_num = 0;
 
     av_buffer_unref(&ctx->recon_frames_ref);
     av_buffer_unref(&ctx->input_frames_ref);
