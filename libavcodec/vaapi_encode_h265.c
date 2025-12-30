@@ -280,7 +280,9 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
 
     desc = av_pix_fmt_desc_get(priv->common.input_frames->sw_format);
     av_assert0(desc);
-    if (desc->nb_components == 1) {
+    if (desc->nb_components == 4) { //RGBA
+        chroma_format = 1;
+    } else if (desc->nb_components == 1) {
         chroma_format = 0;
     } else {
         if (desc->log2_chroma_w == 1 && desc->log2_chroma_h == 1) {
@@ -318,21 +320,17 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
     ptl->general_profile_idc   = avctx->profile;
     ptl->general_tier_flag     = priv->tier;
 
-    ptl->general_profile_compatibility_flag[ptl->general_profile_idc] = 1;
-
-    if (ptl->general_profile_compatibility_flag[1])
-        ptl->general_profile_compatibility_flag[2] = 1;
-    if (ptl->general_profile_compatibility_flag[3]) {
-        ptl->general_profile_compatibility_flag[1] = 1;
-        ptl->general_profile_compatibility_flag[2] = 1;
+    if (chroma_format == 1) {
+        ptl->general_profile_compatibility_flag[1] = bit_depth ==  8;
+        ptl->general_profile_compatibility_flag[2] = bit_depth <= 10;
     }
+    ptl->general_profile_compatibility_flag[4] = 1;
 
     ptl->general_progressive_source_flag    = 1;
     ptl->general_interlaced_source_flag     = 0;
     ptl->general_non_packed_constraint_flag = 1;
     ptl->general_frame_only_constraint_flag = 1;
 
-    ptl->general_max_14bit_constraint_flag = bit_depth <= 14;
     ptl->general_max_12bit_constraint_flag = bit_depth <= 12;
     ptl->general_max_10bit_constraint_flag = bit_depth <= 10;
     ptl->general_max_8bit_constraint_flag  = bit_depth ==  8;
@@ -342,19 +340,20 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
     ptl->general_max_monochrome_constraint_flag = chroma_format == 0;
 
     ptl->general_intra_constraint_flag = ctx->gop_size == 1;
-    ptl->general_one_picture_only_constraint_flag = 0;
 
     ptl->general_lower_bit_rate_constraint_flag = 1;
 
-    if (avctx->level != AV_LEVEL_UNKNOWN) {
+    if (avctx->level != FF_LEVEL_UNKNOWN) {
         ptl->general_level_idc = avctx->level;
     } else {
+        uint32_t max_dec_pic_buffering = ctx->max_b_depth + 2;
+        if(avctx->refs == 2)
+            max_dec_pic_buffering += 1;
         const H265LevelDescriptor *level;
-
         level = ff_h265_guess_level(ptl, avctx->bit_rate,
                                     ctx->surface_width, ctx->surface_height,
                                     ctx->nb_slices, ctx->tile_rows, ctx->tile_cols,
-                                    (ctx->b_per_p > 0) + 1);
+                                    max_dec_pic_buffering);
         if (level) {
             av_log(avctx, AV_LOG_VERBOSE, "Using level %s.\n", level->name);
             ptl->general_level_idc = level->level_idc;
@@ -369,6 +368,9 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
 
     vps->vps_sub_layer_ordering_info_present_flag = 0;
     vps->vps_max_dec_pic_buffering_minus1[0]      = ctx->max_b_depth + 1;
+    if(avctx->refs == 2)
+        vps->vps_max_dec_pic_buffering_minus1[0] += 1;
+    
     vps->vps_max_num_reorder_pics[0]              = ctx->max_b_depth;
     vps->vps_max_latency_increase_plus1[0]        = 0;
 
@@ -413,6 +415,8 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
     sps->pic_width_in_luma_samples  = ctx->surface_width;
     sps->pic_height_in_luma_samples = ctx->surface_height;
 
+    sps->strong_intra_smoothing_enabled_flag = 1;
+
     if (avctx->width  != ctx->surface_width ||
         avctx->height != ctx->surface_height) {
         sps->conformance_window_flag = 1;
@@ -422,6 +426,11 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
         sps->conf_win_top_offset    = 0;
         sps->conf_win_bottom_offset =
             (ctx->surface_height - avctx->height) >> desc->log2_chroma_h;
+        if (desc->nb_components == 4) {
+            //RGBA default encoding to yuv420.
+            sps->conf_win_right_offset  >>= 1;
+            sps->conf_win_bottom_offset >>= 1;
+        }
     } else {
         sps->conformance_window_flag = 0;
     }
@@ -429,7 +438,7 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
     sps->bit_depth_luma_minus8   = bit_depth - 8;
     sps->bit_depth_chroma_minus8 = bit_depth - 8;
 
-    sps->log2_max_pic_order_cnt_lsb_minus4 = 8;
+    sps->log2_max_pic_order_cnt_lsb_minus4 = 10;
 
     sps->sps_sub_layer_ordering_info_present_flag =
         vps->vps_sub_layer_ordering_info_present_flag;
@@ -442,83 +451,83 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
             vps->vps_max_latency_increase_plus1[i];
     }
 
-    // These values come from the capabilities of the first encoder
-    // implementation in the i965 driver on Intel Skylake.  They may
-    // fail badly with other platforms or drivers.
-    // CTB size from 8x8 to 32x32.
+    // These have to come from the capabilities of the encoder.  We have no
+    // way to query them, so just hardcode parameters which work on the Intel
+    // driver.
+
+//+gregory 2021/10/18 remove the setting for intel encoder
+    // // CTB size from 8x8 to 32x32.
+    // sps->log2_min_luma_coding_block_size_minus3   = 0;
+    // sps->log2_diff_max_min_luma_coding_block_size = 2;
+    // // Transform size from 4x4 to 32x32.
+    // sps->log2_min_luma_transform_block_size_minus2   = 0;
+    // sps->log2_diff_max_min_luma_transform_block_size = 3;
+    // // Full transform hierarchy allowed (2-5).
+    // sps->max_transform_hierarchy_depth_inter = 3;
+    // sps->max_transform_hierarchy_depth_intra = 3;
+    // // AMP works.
+    // sps->amp_enabled_flag = 1;
+    // // SAO and temporal MVP do not work.
+    // sps->sample_adaptive_offset_enabled_flag = 0;
+    // sps->sps_temporal_mvp_enabled_flag       = 0;
+
+    // sps->pcm_enabled_flag = 0;
+
+    // // STRPSs should ideally be here rather than defined individually in
+    // // each slice, but the structure isn't completely fixed so for now
+    // // don't bother.
+    // sps->num_short_term_ref_pic_sets     = 0;
+    // sps->long_term_ref_pics_present_flag = 0;
+//-gregory
+
+//+gregory 2021/10/18 modify the setting for wave6 encoder
+    // CTB size from 8x8 to 64x64.
     sps->log2_min_luma_coding_block_size_minus3   = 0;
-    sps->log2_diff_max_min_luma_coding_block_size = 2;
+    sps->log2_diff_max_min_luma_coding_block_size = 3;
     // Transform size from 4x4 to 32x32.
     sps->log2_min_luma_transform_block_size_minus2   = 0;
     sps->log2_diff_max_min_luma_transform_block_size = 3;
-    // Full transform hierarchy allowed (2-5).
-    sps->max_transform_hierarchy_depth_inter = 3;
-    sps->max_transform_hierarchy_depth_intra = 3;
+    // Full transform hierarchy 
+    sps->max_transform_hierarchy_depth_inter = 0;
+    sps->max_transform_hierarchy_depth_intra = 0;
     // AMP works.
-    sps->amp_enabled_flag = 1;
+    sps->amp_enabled_flag = 0;
     // SAO and temporal MVP do not work.
-    sps->sample_adaptive_offset_enabled_flag = 0;
-    sps->sps_temporal_mvp_enabled_flag       = 0;
+    sps->sample_adaptive_offset_enabled_flag = 1;
+    sps->sps_temporal_mvp_enabled_flag       = 1;
 
     sps->pcm_enabled_flag = 0;
-
-// update sps setting according to queried result
-#if VA_CHECK_VERSION(1, 13, 0)
-    if (priv->va_features) {
-        VAConfigAttribValEncHEVCFeatures features = { .value = priv->va_features };
-
-        // Enable feature if get queried result is VA_FEATURE_SUPPORTED | VA_FEATURE_REQUIRED
-        sps->amp_enabled_flag =
-            !!features.bits.amp;
-        sps->sample_adaptive_offset_enabled_flag =
-            !!features.bits.sao;
-        sps->sps_temporal_mvp_enabled_flag =
-            !!features.bits.temporal_mvp;
-        sps->pcm_enabled_flag =
-            !!features.bits.pcm;
-    }
-
-    if (priv->va_bs) {
-        VAConfigAttribValEncHEVCBlockSizes bs = { .value = priv->va_bs };
-        sps->log2_min_luma_coding_block_size_minus3 =
-            ff_ctz(priv->min_cb_size) - 3;
-        sps->log2_diff_max_min_luma_coding_block_size =
-            ff_ctz(priv->ctu_size) - ff_ctz(priv->min_cb_size);
-
-        sps->log2_min_luma_transform_block_size_minus2 =
-            bs.bits.log2_min_luma_transform_block_size_minus2;
-        sps->log2_diff_max_min_luma_transform_block_size =
-            bs.bits.log2_max_luma_transform_block_size_minus2 -
-            bs.bits.log2_min_luma_transform_block_size_minus2;
-
-        sps->max_transform_hierarchy_depth_inter =
-            bs.bits.max_max_transform_hierarchy_depth_inter;
-        sps->max_transform_hierarchy_depth_intra =
-            bs.bits.max_max_transform_hierarchy_depth_intra;
-    }
-#endif
 
     // STRPSs should ideally be here rather than defined individually in
     // each slice, but the structure isn't completely fixed so for now
     // don't bother.
     sps->num_short_term_ref_pic_sets     = 0;
     sps->long_term_ref_pics_present_flag = 0;
-
+//-gregory
     sps->vui_parameters_present_flag = 1;
+
+    //sps->scaling_list_enabled_flag = 1;
 
     if (avctx->sample_aspect_ratio.num != 0 &&
         avctx->sample_aspect_ratio.den != 0) {
+        static const AVRational sar_idc[] = {
+            {   0,  0 },
+            {   1,  1 }, {  12, 11 }, {  10, 11 }, {  16, 11 },
+            {  40, 33 }, {  24, 11 }, {  20, 11 }, {  32, 11 },
+            {  80, 33 }, {  18, 11 }, {  15, 11 }, {  64, 33 },
+            { 160, 99 }, {   4,  3 }, {   3,  2 }, {   2,  1 },
+        };
         int num, den, i;
         av_reduce(&num, &den, avctx->sample_aspect_ratio.num,
                   avctx->sample_aspect_ratio.den, 65535);
-        for (i = 0; i < FF_ARRAY_ELEMS(ff_h2645_pixel_aspect); i++) {
-            if (num == ff_h2645_pixel_aspect[i].num &&
-                den == ff_h2645_pixel_aspect[i].den) {
+        for (i = 0; i < FF_ARRAY_ELEMS(sar_idc); i++) {
+            if (num == sar_idc[i].num &&
+                den == sar_idc[i].den) {
                 vui->aspect_ratio_idc = i;
                 break;
             }
         }
-        if (i >= FF_ARRAY_ELEMS(ff_h2645_pixel_aspect)) {
+        if (i >= FF_ARRAY_ELEMS(sar_idc)) {
             vui->aspect_ratio_idc = 255;
             vui->sar_width  = num;
             vui->sar_height = den;
@@ -578,27 +587,22 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
     pps->num_ref_idx_l0_default_active_minus1 = 0;
     pps->num_ref_idx_l1_default_active_minus1 = 0;
 
+    pps->lists_modification_present_flag = 1;
+
     pps->init_qp_minus26 = priv->fixed_qp_idr - 26;
 
     pps->cu_qp_delta_enabled_flag = (ctx->va_rc_mode != VA_RC_CQP);
-    pps->diff_cu_qp_delta_depth   = 0;
-
-// update pps setting according to queried result
-#if VA_CHECK_VERSION(1, 13, 0)
-    if (priv->va_features) {
-        VAConfigAttribValEncHEVCFeatures features = { .value = priv->va_features };
-        if (ctx->va_rc_mode != VA_RC_CQP)
-            pps->cu_qp_delta_enabled_flag =
-                !!features.bits.cu_qp_delta;
-
-        pps->transform_skip_enabled_flag =
-            !!features.bits.transform_skip;
-        // set diff_cu_qp_delta_depth as its max value if cu_qp_delta enabled. Otherwise
-        // 0 will make cu_qp_delta invalid.
-        if (pps->cu_qp_delta_enabled_flag)
-            pps->diff_cu_qp_delta_depth = sps->log2_diff_max_min_luma_coding_block_size;
+//+gregory 2021/10/18 remove the setting for intel encoder
+    // pps->diff_cu_qp_delta_depth   = 0;
+//-gregory 2021/10/18 
+//+gregory 2021/10/18 modify the setting for wave6 encoder
+    if (pps->cu_qp_delta_enabled_flag == 1) {
+        pps->diff_cu_qp_delta_depth   = 1;
     }
-#endif
+    else {
+       pps->diff_cu_qp_delta_depth   = 0;
+    }
+//-gregory 2021/10/18 
 
     if (ctx->tile_rows && ctx->tile_cols) {
         int uniform_spacing;
@@ -635,6 +639,9 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
     }
 
     pps->pps_loop_filter_across_slices_enabled_flag = 1;
+
+    //tim
+    pps->transform_skip_enabled_flag = 1;
 
     // Fill VAAPI parameter buffers.
 
@@ -701,8 +708,8 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
 
         .coded_buf = VA_INVALID_ID,
 
-        .collocated_ref_pic_index = sps->sps_temporal_mvp_enabled_flag ?
-                                    0 : 0xff,
+        .collocated_ref_pic_index = 0,
+
         .last_picture = 0,
 
         .pic_init_qp            = pps->init_qp_minus26 + 26,
@@ -735,8 +742,6 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
             .entropy_coding_sync_enabled_flag = pps->entropy_coding_sync_enabled_flag,
             .loop_filter_across_tiles_enabled_flag =
                 pps->loop_filter_across_tiles_enabled_flag,
-            .pps_loop_filter_across_slices_enabled_flag =
-                pps->pps_loop_filter_across_slices_enabled_flag,
             .scaling_list_data_present_flag = (sps->sps_scaling_list_data_present_flag |
                                                pps->pps_scaling_list_data_present_flag),
             .screen_content_flag            = 0,
@@ -793,6 +798,14 @@ static int vaapi_encode_h265_init_picture_params(AVCodecContext *avctx,
             for (irap_ref = pic; irap_ref; irap_ref = irap_ref->refs[1][0]) {
                 if (irap_ref->type == PICTURE_TYPE_I)
                     break;
+                if(irap_ref->type == PICTURE_TYPE_P 
+                    && avctx->refs == 2 
+                    && irap_ref->refs[1] != NULL)
+                {
+                    irap_ref = NULL;
+                    break;
+                }
+                   
             }
             if (pic->b_depth == ctx->max_b_depth) {
                 hpic->slice_nal_unit = irap_ref ? HEVC_NAL_RASL_N
@@ -964,7 +977,7 @@ static int vaapi_encode_h265_init_picture_params(AVCodecContext *avctx,
     case PICTURE_TYPE_B:
         vpic->pic_fields.bits.idr_pic_flag       = 0;
         vpic->pic_fields.bits.coding_type        = 3;
-        vpic->pic_fields.bits.reference_pic_flag = 0;
+        vpic->pic_fields.bits.reference_pic_flag = pic->is_reference; //0;
         break;
     default:
         av_assert0(0 && "invalid picture type");
@@ -1098,20 +1111,36 @@ static int vaapi_encode_h265_init_slice_params(AVCodecContext *avctx,
         // when this flag is not present, it is inerred to 1.
         sh->collocated_from_l0_flag = 1;
         sh->slice_temporal_mvp_enabled_flag =
-            sps->sps_temporal_mvp_enabled_flag;
+                sps->sps_temporal_mvp_enabled_flag;
         if (sh->slice_temporal_mvp_enabled_flag) {
-            if (sh->slice_type == HEVC_SLICE_B)
+            if(sh->slice_type == HEVC_SLICE_B ){
+                if(pic->refs[0][0]->display_order < pic->refs[1][0]->display_order){
+                    sh->collocated_from_l0_flag = 1;
+                }else{
+                    sh->collocated_from_l0_flag = 0;
+                }
+            }
+            else if(sh->slice_type == HEVC_SLICE_P ) {
                 sh->collocated_from_l0_flag = 1;
-            sh->collocated_ref_idx      = 0;
+                sh->collocated_ref_idx      = 0;
+            }else{
+                sh->collocated_from_l0_flag = 0;
+                sh->collocated_ref_idx      = 0;
+            } 
+            
         }
 
-        sh->num_ref_idx_active_override_flag = 0;
+        sh->num_ref_idx_active_override_flag = 1;
         sh->num_ref_idx_l0_active_minus1 = pps->num_ref_idx_l0_default_active_minus1;
+
+        if(pic->nb_refs[0] == 2 && pic->type == PICTURE_TYPE_P){
+            sh->num_ref_idx_l0_active_minus1 = 1;
+        }
         sh->num_ref_idx_l1_active_minus1 = pps->num_ref_idx_l1_default_active_minus1;
     }
 
-    sh->slice_sao_luma_flag = sh->slice_sao_chroma_flag =
-        sps->sample_adaptive_offset_enabled_flag;
+    sh->slice_sao_luma_flag = sps->sample_adaptive_offset_enabled_flag;
+    sh->slice_sao_chroma_flag = sps->sample_adaptive_offset_enabled_flag && (sps->chroma_format_idc != 0);
 
     if (pic->type == PICTURE_TYPE_B)
         sh->slice_qp_delta = priv->fixed_qp_b - (pps->init_qp_minus26 + 26);
@@ -1120,6 +1149,11 @@ static int vaapi_encode_h265_init_slice_params(AVCodecContext *avctx,
     else
         sh->slice_qp_delta = priv->fixed_qp_idr - (pps->init_qp_minus26 + 26);
 
+//+gregory 2021/10/22 modify the setting for wave6 encoder
+    sh->five_minus_max_num_merge_cand = 3;
+//-gregory
+
+    sh->slice_loop_filter_across_slices_enabled_flag = 1;
 
     *vslice = (VAEncSliceParameterBufferHEVC) {
         .slice_segment_address = sh->slice_segment_address,
@@ -1178,6 +1212,8 @@ static int vaapi_encode_h265_init_slice_params(AVCodecContext *avctx,
         if (ctx->p_to_gpb && pic->type == PICTURE_TYPE_P)
             // Reference for GPB B-frame, L0 == L1
             vslice->ref_pic_list1[0] = vpic->reference_frames[0];
+        if(pic->type == PICTURE_TYPE_P && pic->nb_refs[0] == 2)
+            vslice->ref_pic_list0[1] = vpic->reference_frames[1];
     }
     if (pic->nb_refs[1]) {
         // Forward reference for B-frame.
@@ -1250,8 +1286,12 @@ static av_cold int vaapi_encode_h265_get_encoder_caps(AVCodecContext *avctx)
            "min CB size %dx%d.\n", priv->ctu_size, priv->ctu_size,
            priv->min_cb_size, priv->min_cb_size);
 
-    ctx->surface_width  = FFALIGN(avctx->width,  priv->min_cb_size);
-    ctx->surface_height = FFALIGN(avctx->height, priv->min_cb_size);
+    // ctx->surface_width  = FFALIGN(avctx->width,  priv->min_cb_size);
+    // ctx->surface_height = FFALIGN(avctx->height, priv->min_cb_size);
+
+    // Image Width and Height Must Be Aligned to 16 Due to Hardware Constraints
+    ctx->surface_width  = FFALIGN(avctx->width,  16);
+    ctx->surface_height = FFALIGN(avctx->height, 16);
 
     ctx->slice_block_width = ctx->slice_block_height = priv->ctu_size;
 
@@ -1305,6 +1345,7 @@ static av_cold int vaapi_encode_h265_configure(AVCodecContext *avctx)
 
 static const VAAPIEncodeProfile vaapi_encode_h265_profiles[] = {
     { AV_PROFILE_HEVC_MAIN,     8, 3, 1, 1, VAProfileHEVCMain       },
+    { AV_PROFILE_HEVC_MAIN,     8, 4, 0, 0, VAProfileHEVCMain       },
     { AV_PROFILE_HEVC_REXT,     8, 3, 1, 1, VAProfileHEVCMain       },
 #if VA_CHECK_VERSION(0, 37, 0)
     { AV_PROFILE_HEVC_MAIN_10, 10, 3, 1, 1, VAProfileHEVCMain10     },
@@ -1318,6 +1359,9 @@ static const VAAPIEncodeProfile vaapi_encode_h265_profiles[] = {
     { AV_PROFILE_HEVC_REXT,     8, 3, 0, 0, VAProfileHEVCMain444 },
     { AV_PROFILE_HEVC_REXT,    10, 3, 0, 0, VAProfileHEVCMain444_10 },
     { AV_PROFILE_HEVC_REXT,    12, 3, 0, 0, VAProfileHEVCMain444_12 },
+#endif
+#if HAVE_VA_PROFILE_HEVC_MONO
+    { AV_PROFILE_HEVC_REXT,     8, 1, 0, 0, VAProfileHEVCMono       },
 #endif
     { AV_PROFILE_UNKNOWN }
 };
@@ -1377,6 +1421,17 @@ static av_cold int vaapi_encode_h265_init(AVCodecContext *avctx)
         VA_ENC_PACKED_HEADER_SEQUENCE | // VPS, SPS and PPS.
         VA_ENC_PACKED_HEADER_SLICE    | // Slice headers.
         VA_ENC_PACKED_HEADER_MISC;      // SEI
+
+    ctx->surface_width  = FFALIGN(avctx->width,  16);
+    ctx->surface_height = FFALIGN(avctx->height, 16);
+
+    // CTU size is currently hard-coded to 32.
+//+gregory 2021/10/18 remove the setting for intel encoder
+    // ctx->slice_block_width = ctx->slice_block_height = 32;
+//-gregory
+//+gregory 2021/10/18 modify the setting for wave6 encoder
+    ctx->slice_block_width = ctx->slice_block_height = 64;
+//-gregory
 
     if (priv->qp > 0)
         ctx->explicit_qp = priv->qp;

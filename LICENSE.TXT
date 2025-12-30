@@ -1,0 +1,9 @@
+License Notice
+
+This project is a fork of FFmpeg (https://ffmpeg.org/).
+
+The original copyright holders and license terms of FFmpeg are listed in the FFmpeg source distribution’s COPYRIGHT and LICENSE files, available at:
+https://github.com/FFmpeg/FFmpeg
+
+Moore Threads Technology Co., Ltd ("Moore Threads") has made modifications to certain parts of the FFmpeg source code, All modifications and newly added source code files are distributed under the
+same license terms as FFmpeg, preserving the original FFmpeg licensing structure and obligations.

@@ -103,6 +103,9 @@ static int open_input_file(const char *filename)
         fprintf(stderr, "Failed to open codec for decoding. Error code: %s\n",
                 av_err2str(ret));
 
+    if (decoder_ctx->framerate.num == 0 && video->r_frame_rate.num > 0 && video->r_frame_rate.den > 0)
+        decoder_ctx->framerate = video->r_frame_rate;
+
     return ret;
 }
 

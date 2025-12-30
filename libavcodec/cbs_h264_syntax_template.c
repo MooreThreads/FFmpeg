@@ -52,8 +52,8 @@ static int FUNC(nal_unit_header)(CodedBitstreamContext *ctx, RWContext *rw,
             flag(avc_3d_extension_flag);
 
         if (current->svc_extension_flag) {
-            av_log(ctx->log_ctx, AV_LOG_ERROR, "SVC not supported.\n");
-            return AVERROR_PATCHWELCOME;
+            // av_log(ctx->log_ctx, AV_LOG_ERROR, "SVC not supported.\n");
+            // return AVERROR_PATCHWELCOME;
 
         } else if (current->avc_3d_extension_flag) {
             av_log(ctx->log_ctx, AV_LOG_ERROR, "3DAVC not supported.\n");
@@ -801,6 +801,62 @@ SEI_FUNC(film_grain_characteristics, (CodedBitstreamContext *ctx, RWContext *rw,
     return 0;
 }
 
+SEI_FUNC(sei_scalability_info, (CodedBitstreamContext *ctx, RWContext *rw,
+                                H264RawSEIScalabilityInfo *current,
+                                SEIMessageState *sei))
+{
+    int err;
+
+    HEADER("Scalability info");
+
+    flag(temporal_id_nesting_flag);
+    flag(priority_layer_info_present_flag);
+    flag(priority_id_setting_flag);
+    ue(num_layers_minus1,0,H264_MAX_TEMPORAL_LAYERS);
+
+    for(int i=0; i <= current->num_layers_minus1; ++i){
+        ue(layer_id[i], 0, 2047);
+        u(6, priority_id[i], 0 ,1 << 5 - 1);
+        flag(discardable_flag[i]);
+        u(3, dependency_id[i], 0, 1 << 3 - 1);
+        u(4, quality_id[i], 0, 1 << 4 - 1);
+        u(3, temporal_id[i], 0, 1 << 3 - 1);
+        flag(sub_pic_layer_flag[i]);
+        flag(sub_region_layer_flag[i]);
+        flag(iroi_division_info_present_flag[i]);
+        flag(profile_level_info_present_flag[i]);
+        flag(bitrate_info_present_flag[i]);
+        flag(frm_rate_info_present_flag[i]);
+        flag(frm_size_info_present_flag[i]);
+        flag(layer_dependency_info_present_flag[i]);
+        flag(parameter_sets_info_present_flag[i]);
+        flag(bitstream_restriction_info_present_flag[i]);
+        flag(exact_inter_layer_pred_flag[i]);
+        if( current->sub_pic_layer_flag[i] || current->iroi_division_info_present_flag[i])
+            flag(exact_sample_value_match_flag[i]);
+        flag(layer_conversion_flag[i]);
+        flag(layer_output_flag[i]);
+        if( current->profile_level_info_present_flag[i] )
+            u(24, layer_profile_level_idc[i], 0, 1 << 24 - 1);
+        if( current->bitrate_info_present_flag[i] ) {
+            u(16, avg_bitrate[i], 0, 1 << 16 - 1);
+            u(16, max_bitrate_layer[i], 0, 1 << 16 - 1);
+            u(16, max_bitrate_layer_representation[i], 0, 1 << 16 - 1);
+            u(16, max_bitrate_calc_window[i], 0, 1 << 16 - 1);
+        }
+        if(current->frm_rate_info_present_flag[i]){
+            u(2, constant_frm_rate_idc[i], 0, 2);
+            u(16, avg_frm_rate[i], 0, 1 << 16 - 1);
+        }
+        // if( current->frm_size_info_present_flag[i] || 
+        //     current->iroi_division_info_present_flag[i] ) {
+        //     ue(frm_width_in_mbs_minus1[i], 1, H264_MAX_MB_WIDTH);
+        // }
+    }
+
+    return 0;
+}
+
 SEI_FUNC(sei_display_orientation, (CodedBitstreamContext *ctx, RWContext *rw,
                                    H264RawSEIDisplayOrientation *current,
                                    SEIMessageState *sei))
@@ -1013,6 +1069,40 @@ static int FUNC(dec_ref_pic_marking)(CodedBitstreamContext *ctx, RWContext *rw,
                 return AVERROR_INVALIDDATA;
             }
         }
+    }
+
+    return 0;
+}
+
+static int FUNC(svc_extension)(CodedBitstreamContext *ctx, RWContext *rw,
+                               H264RawSvcExtension *current)
+{
+    CodedBitstreamH264Context *h264 = ctx->priv_data;
+    int err;
+
+    HEADER("SVC extension");
+    CHECK(FUNC(nal_unit_header)(ctx, rw, &current->nal_unit_header,
+                                1 << H264_NAL_PREFIX));
+
+    flag(idr_flag);
+    u(6, priority_id, 0, 64 - 1);
+    flag(no_inter_layer_pred_flag);
+    u(3, dependency_id, 0, 8 - 1);
+    u(4, quality_id, 0, 16 - 1);
+    u(3, temporal_id, 0, 8 - 1);
+    flag(use_ref_base_pic_flag);
+    flag(discardable_flag);
+    flag(output_flag);
+    u(2, reserved_three_2bits, 0, 4 - 1);
+
+    if (current->nal_unit_header.nal_ref_idc != 0)
+    {
+        xu(1, store_ref_base_pic_flag, 
+           current->prefix_nal_unit_svc.store_ref_base_pic_flag, 0, 1, 0);
+        xu(1, additional_prefix_nal_unit_extension_flag, 
+           current->prefix_nal_unit_svc.additional_prefix_nal_unit_extension_flag, 
+           0, 1, 0);
+        CHECK(FUNC(rbsp_trailing_bits)(ctx, rw));
     }
 
     return 0;

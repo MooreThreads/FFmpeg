@@ -228,6 +228,12 @@ enum AVFrameSideDataType {
      * encoding.
      */
     AV_FRAME_DATA_VIDEO_HINT,
+
+    /**
+     * Qp offset map matrix of frame.
+     * The mt vaapi encoder delta QP range from -32 to 31.
+     */
+    AV_FRAME_DATA_QP_DELTA_MAP,
 };
 
 enum AVActiveFormatDescription {

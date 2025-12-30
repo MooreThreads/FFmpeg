@@ -379,6 +379,12 @@ static int vaapi_vc1_start_frame(AVCodecContext *avctx, av_unused const uint8_t 
         pic_param.forward_reference_picture = ff_vaapi_get_surface_id(s->last_picture.f);
         break;
     }
+//+gregory add 2021/12/29 to give res_rtm_flag flag to decoder
+    pic_param.va_reserved[0] = v->res_rtm_flag;
+//-gregory add
+//+clair add 2023/01/26 to give postprocflag flag to decoder
+    pic_param.va_reserved[1] = v->postprocflag;
+//-clair add
 
     err = ff_vaapi_decode_make_param_buffer(avctx, pic,
                                             VAPictureParameterBufferType,
@@ -455,6 +461,8 @@ static int vaapi_vc1_end_frame(AVCodecContext *avctx)
     ret = ff_vaapi_decode_issue(avctx, pic);
     if (ret < 0)
         goto fail;
+
+    ff_mpeg_draw_horiz_band(s, 0, s->avctx->height);
 
 fail:
     return ret;

@@ -107,6 +107,10 @@ enum {
     H264_MAX_MB_HEIGHT   = 1055,
     H264_MAX_WIDTH       = H264_MAX_MB_WIDTH  * 16,
     H264_MAX_HEIGHT      = H264_MAX_MB_HEIGHT * 16,
+
+    // G13.2.8 e. The value of num_of_temporal_layers_in_base_layer_minus1 
+    // shall be in the range of 0 to 7, inclusive.
+    H264_MAX_TEMPORAL_LAYERS = 8,
 };
 
 

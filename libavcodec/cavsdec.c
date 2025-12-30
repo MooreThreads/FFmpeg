@@ -25,17 +25,58 @@
  * @author Stefan Gehrer <stefan.gehrer@gmx.de>
  */
 
+#include "config_components.h"
 #include "libavutil/avassert.h"
 #include "libavutil/emms.h"
 #include "avcodec.h"
 #include "get_bits.h"
 #include "golomb.h"
+#include "hwaccel_internal.h"
+#include "hwconfig.h"
+#include "profiles.h"
 #include "cavs.h"
 #include "codec_internal.h"
 #include "decode.h"
 #include "mathops.h"
 #include "mpeg12data.h"
 #include "startcode.h"
+
+static const uint8_t default_wq_param[4][6] = {
+    {128,  98, 106, 116, 116, 128},
+    {135, 143, 143, 160, 160, 213},
+    {128,  98, 106, 116, 116, 128},
+    {128, 128, 128, 128, 128, 128},
+};
+static const uint8_t wq_model_2_param[4][64] = {
+    {
+        0, 0, 0, 4, 4, 4, 5, 5,
+        0, 0, 3, 3, 3, 3, 5, 5,
+        0, 3, 2, 2, 1, 1, 5, 5,
+        4, 3, 2, 2, 1, 5, 5, 5,
+        4, 3, 1, 1, 5, 5, 5, 5,
+        4, 3, 1, 5, 5, 5, 5, 5,
+        5, 5, 5, 5, 5, 5, 5, 5,
+        5, 5, 5, 5, 5, 5, 5, 5,
+    }, {
+        0, 0, 0, 4, 4, 4, 5, 5,
+        0, 0, 4, 4, 4, 4, 5, 5,
+        0, 3, 2, 2, 2, 1, 5, 5,
+        3, 3, 2, 2, 1, 5, 5, 5,
+        3, 3, 2, 1, 5, 5, 5, 5,
+        3, 3, 1, 5, 5, 5, 5, 5,
+        5, 5, 5, 5, 5, 5, 5, 5,
+        5, 5, 5, 5, 5, 5, 5, 5,
+    }, {
+        0, 0, 0, 4, 4, 3, 5, 5,
+        0, 0, 4, 4, 3, 2, 5, 5,
+        0, 4, 4, 3, 2, 1, 5, 5,
+        4, 4, 3, 2, 1, 5, 5, 5,
+        4, 3, 2, 1, 5, 5, 5, 5,
+        3, 2, 1, 5, 5, 5, 5, 5,
+        5, 5, 5, 5, 5, 5, 5, 5,
+        5, 5, 5, 5, 5, 5, 5, 5,
+    }
+};
 
 static const uint8_t mv_scan[4] = {
     MV_FWD_X0, MV_FWD_X1,
@@ -927,7 +968,11 @@ static int decode_mb_b(AVSContext *h, enum cavs_mb mb_type)
 
 static inline int decode_slice_header(AVSContext *h, GetBitContext *gb)
 {
-    if (h->stc > 0xAF)
+    int i, nref;
+
+    av_log(h->avctx, AV_LOG_TRACE, "slice start code 0x%02x\n", h->stc);
+
+    if (h->stc > SLICE_MAX_START_CODE)
         av_log(h->avctx, AV_LOG_ERROR, "unexpected start code 0x%02x\n", h->stc);
 
     if (h->stc >= h->mb_height) {
@@ -946,12 +991,117 @@ static inline int decode_slice_header(AVSContext *h, GetBitContext *gb)
     }
     /* inter frame or second slice can have weighting params */
     if ((h->cur.f->pict_type != AV_PICTURE_TYPE_I) ||
-        (!h->pic_structure && h->mby >= h->mb_width / 2))
-        if (get_bits1(gb)) { //slice_weighting_flag
-            av_log(h->avctx, AV_LOG_ERROR,
-                   "weighted prediction not yet supported\n");
+        (!h->pic_structure && h->mby >= h->mb_height / 2)) {
+        h->slice_weight_pred_flag = get_bits1(gb);
+        if (h->slice_weight_pred_flag) {
+            nref = h->cur.f->pict_type == AV_PICTURE_TYPE_I ? 1 : (h->pic_structure ? 2 : 4);
+            for (i = 0; i < nref; i++) {
+                h->luma_scale[i] = get_bits(gb, 8);
+                h->luma_shift[i] = get_sbits(gb, 8);
+                skip_bits1(gb);
+                h->chroma_scale[i] = get_bits(gb, 8);
+                h->chroma_shift[i] = get_sbits(gb, 8);
+                skip_bits1(gb);
+            }
+            h->mb_weight_pred_flag = get_bits1(gb);
+            if (!h->avctx->hwaccel) {
+                av_log(h->avctx, AV_LOG_ERROR,
+                    "weighted prediction not yet supported\n");
+            }
         }
+    }
+    if (h->aec_flag) {
+        align_get_bits(gb);
+    }
+
     return 0;
+}
+
+/**
+ * skip stuffing bits before next start code "0x000001"
+ * @return '0' no stuffing bits placed at h->gb being skip, else '1'.
+ */
+static inline int skip_stuffing_bits(AVSContext *h)
+{
+    GetBitContext gb0 = h->gb;
+    GetBitContext *gb = &h->gb;
+    const uint8_t *start;
+    const uint8_t *ptr;
+    const uint8_t *end;
+    int align;
+    int stuffing_zeros;
+
+#if 0
+    /**
+     * skip 1 bit stuffing_bit '1' and 0~7 bit stuffing_bit '0'
+     */
+    if (!get_bits1(gb)) {
+        av_log(h->avctx, AV_LOG_WARNING, "NOT stuffing_bit '1'\n");
+        goto restore_get_bits;
+    }
+    align = (-get_bits_count(gb)) & 7;
+    if (show_bits_long(gb, align)) {
+        av_log(h->avctx, AV_LOG_WARNING, "NOT %d stuffing_bit '0..0'\n", align);
+        goto restore_get_bits;
+    }
+#else
+    /**
+     * Seems like not all the stream follow "next_start_code()" strictly.
+     */
+    align = (-get_bits_count(gb)) & 7;
+    if (align == 0 && show_bits_long(gb, 8) == 0x80) {
+        skip_bits_long(gb, 8);
+    }
+#endif
+
+    /**
+     *  skip leading zero bytes before 0x 00 00 01 stc
+     */
+    ptr = start = align_get_bits(gb);
+    end = gb->buffer_end;
+    while (ptr < end && *ptr == 0)
+        ptr++;
+
+    if ((ptr >= end) || (*ptr == 1 && ptr - start >= 2)) {
+        stuffing_zeros = (ptr >= end ? end - start : ptr - start - 2);
+        if (stuffing_zeros > 0)
+            av_log(h->avctx, AV_LOG_DEBUG, "Skip 0x%x stuffing zeros @0x%x.\n",
+                    stuffing_zeros, (int)(start - gb->buffer));
+        skip_bits_long(gb, stuffing_zeros * 8);
+        return 1;
+    } else {
+        av_log(h->avctx, AV_LOG_DEBUG, "No next_start_code() found @0x%x.\n",
+                (int)(start - gb->buffer));
+        goto restore_get_bits;
+    }
+
+restore_get_bits:
+    h->gb = gb0;
+    return 0;
+}
+
+static inline int skip_extension_and_user_data(AVSContext *h)
+{
+    int stc = -1;
+    const uint8_t *start = align_get_bits(&h->gb);
+    const uint8_t *end = h->gb.buffer_end;
+    const uint8_t *ptr, *next;
+
+    for (ptr = start; ptr + 4 < end; ptr = next) {
+        stc = show_bits_long(&h->gb, 32);
+        if (stc != EXT_START_CODE && stc != USER_START_CODE) {
+            break;
+        }
+        next = avpriv_find_start_code(ptr + 4, end, &stc);
+        if (next < end) {
+            next -= 4;
+        }
+        skip_bits(&h->gb, (next - ptr) * 8);
+        av_log(h->avctx, AV_LOG_DEBUG, "skip %d byte ext/user data\n",
+                (int)(next - ptr));
+    }
+
+    return ptr > start;
 }
 
 static inline int check_for_slice(AVSContext *h)
@@ -981,44 +1131,133 @@ static inline int check_for_slice(AVSContext *h)
  * frame level
  *
  ****************************************************************************/
+static int hwaccel_pic(AVSContext *h)
+{
+    int ret = 0;
+    int stc = -1;
+    const uint8_t *frm_start = align_get_bits(&h->gb);
+    const uint8_t *frm_end = h->gb.buffer_end;
+    const uint8_t *slc_start = frm_start;
+    const uint8_t *slc_end = frm_end;
+    GetBitContext gb = h->gb;
+    const FFHWAccel *hwaccel = ffhwaccel(h->avctx->hwaccel);
+
+    ret = hwaccel->start_frame(h->avctx, NULL, 0);
+    if (ret < 0)
+        return ret;
+
+    for (slc_start = frm_start; slc_start + 4 < frm_end; slc_start = slc_end) {
+        slc_end = avpriv_find_start_code(slc_start + 4, frm_end, &stc);
+        if (slc_end < frm_end) {
+            slc_end -= 4;
+        }
+
+        init_get_bits(&h->gb, slc_start, (slc_end - slc_start) * 8);
+        if (!check_for_slice(h)) {
+            break;
+        }
+
+        ret = hwaccel->decode_slice(h->avctx, slc_start, slc_end - slc_start);
+        if (ret < 0) {
+            break;
+        }
+    }
+
+    h->gb = gb;
+    skip_bits(&h->gb, (slc_start - frm_start) * 8);
+
+    if (ret < 0)
+        return ret;
+
+    return hwaccel->end_frame(h->avctx);
+}
+
+/**
+ * @brief remove frame out of dpb
+ */
+static void cavs_frame_unref(AVSFrame *frame)
+{
+    /* frame->f can be NULL if context init failed */
+    if (!frame->f || !frame->f->buf[0])
+        return;
+
+    av_buffer_unref(&frame->hwaccel_priv_buf);
+    frame->hwaccel_picture_private = NULL;
+
+    av_frame_unref(frame->f);
+}
+
+static int output_one_frame(AVSContext *h, AVFrame *data, int *got_frame)
+{
+    if (h->out[0].f->buf[0]) {
+        av_log(h->avctx, AV_LOG_DEBUG, "output frame: poc=%d\n", h->out[0].poc);
+        av_frame_move_ref(data, h->out[0].f);
+        *got_frame = 1;
+
+        // out[0] <- out[1] <- out[2] <- out[0]
+        cavs_frame_unref(&h->out[2]);
+        FFSWAP(AVSFrame, h->out[0], h->out[2]);
+        FFSWAP(AVSFrame, h->out[0], h->out[1]);
+
+        return 1;
+    }
+
+    return 0;
+}
+
+static void queue_one_frame(AVSContext *h, AVSFrame *out)
+{
+    int idx = !h->out[0].f->buf[0] ? 0 : (!h->out[1].f->buf[0] ? 1 : 2);
+    av_log(h->avctx, AV_LOG_DEBUG, "queue in out[%d]: poc=%d\n", idx, out->poc);
+    av_frame_ref(h->out[idx].f, out->f);
+    h->out[idx].poc = out->poc;
+}
 
 static int decode_pic(AVSContext *h)
 {
     int ret;
     int skip_count    = -1;
     enum cavs_mb mb_type;
+    char tc[4];
 
     if (!h->top_qp) {
         av_log(h->avctx, AV_LOG_ERROR, "No sequence header decoded yet\n");
         return AVERROR_INVALIDDATA;
     }
 
-    av_frame_unref(h->cur.f);
+    cavs_frame_unref(&h->cur);
 
-    skip_bits(&h->gb, 16);//bbv_dwlay
+    skip_bits(&h->gb, 16);//bbv_delay
+    if (h->profile == AV_PROFILE_CAVS_GUANGDIAN) {
+        skip_bits(&h->gb, 8);//bbv_dwlay_extension
+    }
+
     if (h->stc == PIC_PB_START_CODE) {
         h->cur.f->pict_type = get_bits(&h->gb, 2) + AV_PICTURE_TYPE_I;
         if (h->cur.f->pict_type > AV_PICTURE_TYPE_B) {
             av_log(h->avctx, AV_LOG_ERROR, "illegal picture type\n");
             return AVERROR_INVALIDDATA;
         }
+
         /* make sure we have the reference frames we need */
-        if (!h->DPB[0].f->data[0] ||
-           (!h->DPB[1].f->data[0] && h->cur.f->pict_type == AV_PICTURE_TYPE_B))
+        if (!h->DPB[0].f->buf[0] ||
+            (!h->DPB[1].f->buf[0] && h->cur.f->pict_type == AV_PICTURE_TYPE_B)) {
+            av_log(h->avctx, AV_LOG_ERROR, "Invalid reference frame\n");
             return AVERROR_INVALIDDATA;
+        }
     } else {
         h->cur.f->pict_type = AV_PICTURE_TYPE_I;
-        if (get_bits1(&h->gb))
-            skip_bits(&h->gb, 24);//time_code
-        /* old sample clips were all progressive and no low_delay,
-           bump stream revision if detected otherwise */
-        if (h->low_delay || !(show_bits(&h->gb, 9) & 1))
-            h->stream_revision = 1;
-        /* similarly test top_field_first and repeat_first_field */
-        else if (show_bits(&h->gb, 11) & 3)
-            h->stream_revision = 1;
-        if (h->stream_revision > 0)
-            skip_bits(&h->gb, 1); //marker_bit
+        if (get_bits1(&h->gb)) {    //time_code
+            skip_bits(&h->gb, 1);
+            tc[0] = get_bits(&h->gb, 5);
+            tc[1] = get_bits(&h->gb, 6);
+            tc[2] = get_bits(&h->gb, 6);
+            tc[3] = get_bits(&h->gb, 6);
+            av_log(h->avctx, AV_LOG_DEBUG, "timecode: %d:%d:%d.%d\n", 
+                    tc[0], tc[1], tc[2], tc[3]);
+        }
+            
+        skip_bits(&h->gb, 1);
     }
 
     if (get_bits_left(&h->gb) < 23)
@@ -1028,6 +1267,17 @@ static int decode_pic(AVSContext *h)
                         0 : AV_GET_BUFFER_FLAG_REF);
     if (ret < 0)
         return ret;
+
+    if (h->avctx->hwaccel) {
+        const FFHWAccel *hwaccel = ffhwaccel(h->avctx->hwaccel);
+        av_assert0(!h->cur.hwaccel_picture_private);
+        if (hwaccel->frame_priv_data_size) {
+            h->cur.hwaccel_priv_buf = av_buffer_allocz(hwaccel->frame_priv_data_size);
+            if (!h->cur.hwaccel_priv_buf)
+                return AVERROR(ENOMEM);
+            h->cur.hwaccel_picture_private = h->cur.hwaccel_priv_buf->data;
+        }
+    }
 
     if (!h->edge_emu_buffer) {
         int alloc_size = FFALIGN(FFABS(h->cur.f->linesize[0]) + 32, 32);
@@ -1039,6 +1289,8 @@ static int decode_pic(AVSContext *h)
     if ((ret = ff_cavs_init_pic(h)) < 0)
         return ret;
     h->cur.poc = get_bits(&h->gb, 8) * 2;
+    av_log(h->avctx, AV_LOG_DEBUG, "poc=%d, type=%d\n",
+            h->cur.poc, h->cur.f->pict_type);
 
     /* get temporal distances and MV scaling factors */
     if (h->cur.f->pict_type != AV_PICTURE_TYPE_B) {
@@ -1052,8 +1304,12 @@ static int decode_pic(AVSContext *h)
     if (h->cur.f->pict_type == AV_PICTURE_TYPE_B) {
         h->sym_factor = h->dist[0] * h->scale_den[1];
         if (FFABS(h->sym_factor) > 32768) {
+            av_log(h->avctx, AV_LOG_ERROR, "poc=%d/%d/%d, dist=%d/%d\n",
+                    h->DPB[1].poc, h->DPB[0].poc, h->cur.poc, h->dist[0], h->dist[1]);
             av_log(h->avctx, AV_LOG_ERROR, "sym_factor %d too large\n", h->sym_factor);
-            return AVERROR_INVALIDDATA;
+
+            if (!h->avctx->hwaccel)
+                return AVERROR_INVALIDDATA;
         }
     } else {
         h->direct_den[0] = h->dist[0] ? 16384 / h->dist[0] : 0;
@@ -1062,9 +1318,9 @@ static int decode_pic(AVSContext *h)
 
     if (h->low_delay)
         get_ue_golomb(&h->gb); //bbv_check_times
-    h->progressive   = get_bits1(&h->gb);
+    h->progressive_frame = get_bits1(&h->gb);
     h->pic_structure = 1;
-    if (!h->progressive)
+    if (!h->progressive_frame)
         h->pic_structure = get_bits1(&h->gb);
     if (!h->pic_structure && h->stc == PIC_PB_START_CODE)
         skip_bits1(&h->gb);     //advanced_pred_mode_disable
@@ -1073,14 +1329,18 @@ static int decode_pic(AVSContext *h)
     h->pic_qp_fixed =
     h->qp_fixed = get_bits1(&h->gb);
     h->qp       = get_bits(&h->gb, 6);
+    h->skip_mode_flag = 0;
+    h->ref_flag = 0;
     if (h->cur.f->pict_type == AV_PICTURE_TYPE_I) {
-        if (!h->progressive && !h->pic_structure)
-            skip_bits1(&h->gb);//what is this?
+        if (!h->progressive_frame && !h->pic_structure)
+            h->skip_mode_flag  = get_bits1(&h->gb);
         skip_bits(&h->gb, 4);   //reserved bits
     } else {
         if (!(h->cur.f->pict_type == AV_PICTURE_TYPE_B && h->pic_structure == 1))
             h->ref_flag        = get_bits1(&h->gb);
-        skip_bits(&h->gb, 4);   //reserved bits
+        skip_bits1(&h->gb);     //no_forward_ref_flag
+        h->pb_field_enhanced_flag = get_bits1(&h->gb);
+        skip_bits(&h->gb, 2);   //reserved bits
         h->skip_mode_flag      = get_bits1(&h->gb);
     }
     h->loop_filter_disable     = get_bits1(&h->gb);
@@ -1096,8 +1356,46 @@ static int decode_pic(AVSContext *h)
         h->alpha_offset = h->beta_offset  = 0;
     }
 
+    h->weight_quant_flag = 0;
+    if (h->profile == AV_PROFILE_CAVS_GUANGDIAN) {
+        h->weight_quant_flag = get_bits1(&h->gb);
+        if (h->weight_quant_flag) {
+            int wq_param[6] = {128, 128, 128, 128, 128, 128};
+            int i, wqp_index, wq_model;
+            const uint8_t *m2p;
+
+            skip_bits1(&h->gb);
+            if (!get_bits1(&h->gb)) {
+                h->chroma_quant_param_delta_cb = get_se_golomb(&h->gb);
+                h->chroma_quant_param_delta_cr = get_se_golomb(&h->gb);
+            }
+            wqp_index = get_bits(&h->gb, 2);
+            wq_model = get_bits(&h->gb, 2);
+            m2p = wq_model_2_param[wq_model];
+
+            for (i = 0; i < 6; i++) {
+                int delta = (wqp_index == 1 || wqp_index == 2) ? get_se_golomb(&h->gb) : 0;
+                wq_param[i] = default_wq_param[wqp_index][i] + delta;
+                av_log(h->avctx, AV_LOG_DEBUG, "wqp[%d]=%d\n", i, wq_param[i]);
+            }
+            for (i = 0; i < 64; i++) {
+                h->wqm_8x8[i] = wq_param[ m2p[i] ];
+            }
+        } else {
+            memset(h->wqm_8x8, 128, sizeof(h->wqm_8x8));
+        }
+        h->aec_flag = get_bits1(&h->gb);
+        av_log(h->avctx, AV_LOG_DEBUG, "wq_flag=%d, aec_flag=%d\n",
+                h->weight_quant_flag, h->aec_flag);
+    }
+
+    skip_stuffing_bits(h);
+    skip_extension_and_user_data(h);
+
     ret = 0;
-    if (h->cur.f->pict_type == AV_PICTURE_TYPE_I) {
+    if (h->avctx->hwaccel) {
+        ret = hwaccel_pic(h);
+    } else if (h->cur.f->pict_type == AV_PICTURE_TYPE_I) {
         do {
             check_for_slice(h);
             ret = decode_mb_i(h, 0);
@@ -1160,11 +1458,6 @@ static int decode_pic(AVSContext *h)
         } while (ff_cavs_next_mb(h));
     }
     emms_c();
-    if (ret >= 0 && h->cur.f->pict_type != AV_PICTURE_TYPE_B) {
-        av_frame_unref(h->DPB[1].f);
-        FFSWAP(AVSFrame, h->cur, h->DPB[1]);
-        FFSWAP(AVSFrame, h->DPB[0], h->DPB[1]);
-    }
     return ret;
 }
 
@@ -1181,13 +1474,8 @@ static int decode_seq_header(AVSContext *h)
     int ret;
 
     h->profile = get_bits(&h->gb, 8);
-    if (h->profile != 0x20) {
-        avpriv_report_missing_feature(h->avctx,
-                                      "only supprt JiZhun profile");
-        return AVERROR_PATCHWELCOME;
-    }
     h->level   = get_bits(&h->gb, 8);
-    skip_bits1(&h->gb); //progressive sequence
+    h->progressive_seq = get_bits1(&h->gb);
 
     width  = get_bits(&h->gb, 14);
     height = get_bits(&h->gb, 14);
@@ -1214,6 +1502,9 @@ static int decode_seq_header(AVSContext *h)
     skip_bits1(&h->gb);    //marker_bit
     skip_bits(&h->gb, 12); //bit_rate_upper
     h->low_delay =  get_bits1(&h->gb);
+    av_log(h->avctx, AV_LOG_DEBUG,
+            "seq: profile=0x%02x, level=0x%02x, size=%dx%d, low_delay=%d\n",
+            h->profile, h->level, width, height, h->low_delay);
 
     ret = ff_set_dimensions(h->avctx, width, height);
     if (ret < 0)
@@ -1239,69 +1530,115 @@ static int cavs_decode_frame(AVCodecContext *avctx, AVFrame *rframe,
                              int *got_frame, AVPacket *avpkt)
 {
     AVSContext *h      = avctx->priv_data;
-    const uint8_t *buf = avpkt->data;
-    int buf_size       = avpkt->size;
     uint32_t stc       = -1;
     int input_size, ret;
     const uint8_t *buf_end;
     const uint8_t *buf_ptr;
     int frame_start = 0;
 
-    if (buf_size == 0) {
-        if (!h->low_delay && h->DPB[0].f->data[0]) {
-            *got_frame = 1;
-            av_frame_move_ref(rframe, h->DPB[0].f);
+    if (avpkt->size == 0) {
+        if (h->DPB[0].f->buf[0] && !h->DPB[0].outputed) {
+            queue_one_frame(h, &h->DPB[0]);
+            cavs_frame_unref(&h->DPB[0]);
         }
+        output_one_frame(h, rframe, got_frame);
         return 0;
     }
 
     h->stc = 0;
 
-    buf_ptr = buf;
-    buf_end = buf + buf_size;
-    for(;;) {
+    buf_ptr = avpkt->data;
+    buf_end = avpkt->data + avpkt->size;
+    for(; buf_ptr < buf_end;) {
         buf_ptr = avpriv_find_start_code(buf_ptr, buf_end, &stc);
         if ((stc & 0xFFFFFE00) || buf_ptr == buf_end) {
             if (!h->stc)
                 av_log(h->avctx, AV_LOG_WARNING, "no frame decoded\n");
-            return FFMAX(0, buf_ptr - buf);
+            return FFMAX(0, buf_ptr - avpkt->data);
         }
         input_size = (buf_end - buf_ptr) * 8;
+        av_log(h->avctx, AV_LOG_TRACE, "Found start code 0x%04x, sz=%d\n",
+                stc, input_size / 8);
         switch (stc) {
         case CAVS_START_CODE:
             init_get_bits(&h->gb, buf_ptr, input_size);
-            decode_seq_header(h);
+            if ((ret = decode_seq_header(h)) < 0)
+                return ret;
+            avctx->profile = h->profile;
+            avctx->level = h->level;
+            if (!h->got_pix_fmt) {
+                h->got_pix_fmt = 1;
+                ret = ff_get_format(avctx, avctx->codec->pix_fmts);
+                if (ret < 0)
+                    return ret;
+
+                avctx->pix_fmt = ret;
+
+                if (h->profile == AV_PROFILE_CAVS_GUANGDIAN && !avctx->hwaccel) {
+                    if (avctx->hw_device_ctx) {
+                        av_log(avctx, AV_LOG_ERROR, "Your platform doesn't suppport hardware"
+                                " accelerated AVS+ decoding. Pick one GPU from MooreThreads"
+                                "(https://www.mthreads.com/). All their GPU support AVS+.\n");
+                        return AVERROR(ENOTSUP);
+                    } else {
+                        //TODO: Native decoder has not been supported yet. Remove this after implementation.
+                        av_log(avctx, AV_LOG_WARNING, "Your platform doesn't support software"
+                                " AVS+ decoding, but hardware accelerated AVS+ decoding is"
+                                " available if MT GPU is installed.\n");
+                    }
+                }
+            }
             break;
         case PIC_I_START_CODE:
-            if (!h->got_keyframe) {
-                av_frame_unref(h->DPB[0].f);
-                av_frame_unref(h->DPB[1].f);
+        case PIC_PB_START_CODE:
+            if (!h->got_pix_fmt) {
+                av_log(avctx, AV_LOG_ERROR, "No sequence header before picture header !!!\n");
+                return AVERROR_INVALIDDATA;
+            }
+            if (stc == PIC_I_START_CODE && !h->got_keyframe) {
+                cavs_frame_unref(&h->DPB[0]);
+                cavs_frame_unref(&h->DPB[1]);
                 h->got_keyframe = 1;
             }
-        case PIC_PB_START_CODE:
             if (frame_start > 1)
                 return AVERROR_INVALIDDATA;
             frame_start ++;
             if (*got_frame)
                 av_frame_unref(rframe);
             *got_frame = 0;
-            if (!h->got_keyframe)
+            if (!h->got_keyframe) {
+                av_log(avctx, AV_LOG_ERROR, "No keyframe decoded before P/B frame.\n");
                 break;
+            }
             init_get_bits(&h->gb, buf_ptr, input_size);
             h->stc = stc;
-            if (decode_pic(h))
-                break;
-            *got_frame = 1;
+            if ((ret = decode_pic(h)) < 0)
+                return ret;
+            buf_ptr = align_get_bits(&h->gb);
+
+            h->cur.outputed = 0;
             if (h->cur.f->pict_type != AV_PICTURE_TYPE_B) {
-                if (h->DPB[!h->low_delay].f->data[0]) {
-                    if ((ret = av_frame_ref(rframe, h->DPB[!h->low_delay].f)) < 0)
-                        return ret;
-                } else {
-                    *got_frame = 0;
+                // at most one delay
+                if (h->DPB[0].f->buf[0] && !h->DPB[0].outputed) {
+                    queue_one_frame(h, &h->DPB[0]);
+                    h->DPB[0].outputed = 1;
                 }
+
+                if (h->low_delay) {
+                    queue_one_frame(h, &h->cur);
+                    h->cur.outputed = 1;
+                }
+
+                // null -> curr -> DPB[0] -> DPB[1]
+                cavs_frame_unref(&h->DPB[1]);
+                FFSWAP(AVSFrame, h->cur, h->DPB[1]);
+                FFSWAP(AVSFrame, h->DPB[0], h->DPB[1]);
             } else {
-                av_frame_move_ref(rframe, h->cur.f);
+                queue_one_frame(h, &h->cur);
+                cavs_frame_unref(&h->cur);
             }
+
+            output_one_frame(h, rframe, got_frame);
             break;
         case EXT_START_CODE:
             //mpeg_decode_extension(avctx, buf_ptr, input_size);
@@ -1309,15 +1646,33 @@ static int cavs_decode_frame(AVCodecContext *avctx, AVFrame *rframe,
         case USER_START_CODE:
             //mpeg_decode_user_data(avctx, buf_ptr, input_size);
             break;
+        case VIDEO_EDIT_CODE:
+            av_log(h->avctx, AV_LOG_WARNING, "Skip video_edit_code\n");
+            break;
+        case VIDEO_SEQ_END_CODE:
+            av_log(h->avctx, AV_LOG_WARNING, "Skip video_sequence_end_code\n");
+            break;
         default:
             if (stc <= SLICE_MAX_START_CODE) {
+                h->stc = stc & 0xff;
                 init_get_bits(&h->gb, buf_ptr, input_size);
                 decode_slice_header(h, &h->gb);
+            } else {
+                av_log(h->avctx, AV_LOG_WARNING, "Skip unsupported start code 0x%04X\n", stc);
             }
             break;
         }
     }
+    return (buf_ptr - avpkt->data);
 }
+
+static const enum AVPixelFormat cavs_hwaccel_pixfmt_list_420[] = {
+#if CONFIG_CAVS_VAAPI_HWACCEL
+    AV_PIX_FMT_VAAPI,
+#endif
+    AV_PIX_FMT_YUV420P,
+    AV_PIX_FMT_NONE
+};
 
 const FFCodec ff_cavs_decoder = {
     .p.name         = "cavs",
@@ -1331,4 +1686,12 @@ const FFCodec ff_cavs_decoder = {
     .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY,
     .flush          = cavs_flush,
     .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
+    .p.pix_fmts     = cavs_hwaccel_pixfmt_list_420,
+    .hw_configs     = (const AVCodecHWConfigInternal *const []) {
+#if CONFIG_CAVS_VAAPI_HWACCEL
+                        HWACCEL_VAAPI(cavs),
+#endif
+                        NULL
+                    },
+    .p.profiles     = NULL_IF_CONFIG_SMALL(ff_cavs_profiles),
 };

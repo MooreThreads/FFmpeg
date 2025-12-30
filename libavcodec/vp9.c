@@ -174,7 +174,8 @@ static int update_size(AVCodecContext *avctx, int w, int h)
                      CONFIG_VP9_NVDEC_HWACCEL + \
                      CONFIG_VP9_VAAPI_HWACCEL + \
                      CONFIG_VP9_VDPAU_HWACCEL + \
-                     CONFIG_VP9_VIDEOTOOLBOX_HWACCEL)
+                     CONFIG_VP9_VIDEOTOOLBOX_HWACCEL + \
+                     CONFIG_VP9_MTDEC_HWACCEL)
     enum AVPixelFormat pix_fmts[HWACCEL_MAX + 2], *fmtp = pix_fmts;
     VP9Context *s = avctx->priv_data;
     uint8_t *p;
@@ -211,6 +212,9 @@ static int update_size(AVCodecContext *avctx, int w, int h)
 #endif
 #if CONFIG_VP9_VIDEOTOOLBOX_HWACCEL
             *fmtp++ = AV_PIX_FMT_VIDEOTOOLBOX;
+#endif
+#if CONFIG_VP9_MTDEC_HWACCEL
+            *fmtp++ = AV_PIX_FMT_MUSA;
 #endif
             break;
         case AV_PIX_FMT_YUV420P12:
@@ -1923,6 +1927,9 @@ const FFCodec ff_vp9_decoder = {
 #endif
 #if CONFIG_VP9_VIDEOTOOLBOX_HWACCEL
                                HWACCEL_VIDEOTOOLBOX(vp9),
+#endif
+#if CONFIG_VP9_MTDEC_HWACCEL
+                               HWACCEL_MTDEC(vp9),
 #endif
                                NULL
                            },

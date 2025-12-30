@@ -1,0 +1,34 @@
+builds:
+  - job: "build.FFmpeg"
+    buildAfterMerged: "true"
+    name: "jenkins/linux-build"
+    parameters:
+      containerImage: "sh-harbor.mthreads.com/build-env/gr-umd-uos:v31"
+      cmd: "mkdir build && ./ffmpeg_docker_build.sh"
+      distPath: "mt_video/mt_video_dist"
+      packageNames: "ffmpeg_arm64.deb\nffmpeg_x86_64.deb\nffmpeg_loongarch64.deb"
+
+  - job: "build.FFmpeg.win"
+    name: "win/build_FFmpeg_win"
+    trigger: "NOTE,MERGE,PUSH"
+    outputDir : "artifacts"
+    parameters:
+      timelimit: 60
+      packages:
+        - packageName: "windows_ffmpeg.tar.gz"
+          packageDir: "artifacts"
+      steps:
+        - cmd: 'ffmpeg_msys2_buld.bat C:/jenkins/workspace/build.FFmpeg.win'
+          distPath: "FFmpeg\\build-msvc\\bin"
+          buildPath: "FFmpeg"
+
+tests:
+  - job: "test.FFmpeg"
+    name: "jenkins/ffmpeg_test"
+    parameters:
+      nodeLabel: "S80_video_test"
+      ddkBranch: "master"
+      packageName: "ddk2.0.deb"
+      ffmpegPackageName: "ffmpeg_x86_64.deb"
+      vaapiBranch: "scj_dev"
+      videosPackageUrl: "https://oss.mthreads.com/release-ci/media/depend/videos.tar.gz"

@@ -39,8 +39,10 @@
 #define EXT_START_CODE          0x000001b5
 #define USER_START_CODE         0x000001b2
 #define CAVS_START_CODE         0x000001b0
+#define VIDEO_SEQ_END_CODE      0x000001b1
 #define PIC_I_START_CODE        0x000001b3
 #define PIC_PB_START_CODE       0x000001b6
+#define VIDEO_EDIT_CODE         0x000001b7
 
 #define A_AVAIL                          1
 #define B_AVAIL                          2
@@ -164,10 +166,15 @@ struct dec_2dvlc {
 typedef struct AVSFrame {
     AVFrame *f;
     int poc;
+    int outputed;
+
+    AVBufferRef   *hwaccel_priv_buf;
+    void          *hwaccel_picture_private;
 } AVSFrame;
 
 typedef struct AVSContext {
     AVCodecContext *avctx;
+    int got_pix_fmt;
     BlockDSPContext bdsp;
     H264ChromaContext h264chroma;
     VideoDSPContext vdsp;
@@ -175,6 +182,9 @@ typedef struct AVSContext {
     GetBitContext gb;
     AVSFrame cur;     ///< currently decoded frame
     AVSFrame DPB[2];  ///< reference frames
+    AVSFrame out[3];  ///< output queue, size 2 maybe enough
+    // AVFrame* curr_out;
+    // AVFrame* delay_out;   ///< even current low_delay=0, last seq may has un-output frames
     int dist[2];     ///< temporal distances from current frame to ref frames
     int low_delay;
     int profile, level;
@@ -182,12 +192,37 @@ typedef struct AVSContext {
     int mb_width, mb_height;
     int width, height;
     int stream_revision; ///<0 for samples from 2006, 1 for rm52j encoder
-    int progressive;
+    int progressive_seq;
+    int progressive_frame;
     int pic_structure;
     int skip_mode_flag; ///< select between skip_count or one skip_flag per MB
     int loop_filter_disable;
     int alpha_offset, beta_offset;
     int ref_flag;
+
+    /** \defgroup guangdian profile
+     * @{
+     */
+    int aec_flag;
+    int weight_quant_flag;
+    int pb_field_enhanced_flag;
+    int chroma_quant_param_delta_cb;
+    int chroma_quant_param_delta_cr;
+    uint8_t wqm_8x8[64];
+    /**@}*/
+
+    /** \defgroup slice weighting
+     * FFmpeg don't support slice weighting natively, but maybe needed for HWaccel.
+     * @{
+     */
+    uint32_t slice_weight_pred_flag : 1;
+    uint32_t mb_weight_pred_flag    : 1;
+    uint8_t luma_scale[4];
+    int8_t luma_shift[4];
+    uint8_t chroma_scale[4];
+    int8_t chroma_shift[4];
+    /**@}*/
+
     int mbx, mby, mbidx; ///< macroblock coordinates
     int flags;         ///< availability flags of neighbouring macroblocks
     int stc;           ///< last start code

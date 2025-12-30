@@ -4112,6 +4112,12 @@ Set the number of tiles to encode the input video with, as columns x rows.
 @item tile_groups
 Set tile groups number. All the tiles will be distributed as evenly as possible to
 each tile group. (default is 1).
+@item tile_cols_log2
+Set log2 of columns number (default is 0):
+@item tile_rols_log2
+Set log2 of rows number (default is 0):
+@item tile_groups
+Set number of tile groups (default is 1):
 @end table
 
 @item h264_vaapi

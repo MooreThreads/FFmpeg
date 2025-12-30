@@ -1275,6 +1275,8 @@ static int ist_add(const OptionsContext *o, Demuxer *d, AVStream *st)
             // There is no real AVHWFrameContext implementation. Set
             // hwaccel_output_format to avoid av_hwframe_transfer_data error.
             ds->dec_opts.hwaccel_output_format = AV_PIX_FMT_MEDIACODEC;
+        } else if (!hwaccel_output_format && hwaccel && !strcmp(hwaccel, "muvid")) {
+            ds->dec_opts.hwaccel_output_format = AV_PIX_FMT_MUSA;
         } else if (hwaccel_output_format) {
             ds->dec_opts.hwaccel_output_format = av_get_pix_fmt(hwaccel_output_format);
             if (ds->dec_opts.hwaccel_output_format == AV_PIX_FMT_NONE) {
@@ -1289,6 +1291,9 @@ static int ist_add(const OptionsContext *o, Demuxer *d, AVStream *st)
             // The NVDEC hwaccels use a CUDA device, so remap the name here.
             if (!strcmp(hwaccel, "nvdec") || !strcmp(hwaccel, "cuvid"))
                 hwaccel = "cuda";
+
+            if (!strcmp(hwaccel, "mtdec") || !strcmp(hwaccel, "muvid"))
+                hwaccel = "musa";
 
             if (!strcmp(hwaccel, "none"))
                 ds->dec_opts.hwaccel_id = HWACCEL_NONE;

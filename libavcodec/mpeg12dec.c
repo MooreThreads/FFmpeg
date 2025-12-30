@@ -833,6 +833,18 @@ static int mpeg_decode_update_thread_context(AVCodecContext *avctx,
 }
 #endif
 
+static void quant_matrix_rebuild(uint16_t *matrix, const uint8_t *old_perm,
+                                 const uint8_t *new_perm)
+{
+    uint16_t temp_matrix[64];
+    int i;
+
+    memcpy(temp_matrix, matrix, 64 * sizeof(uint16_t));
+
+    for (i = 0; i < 64; i++)
+        matrix[new_perm[i]] = temp_matrix[old_perm[i]];
+}
+
 static const enum AVPixelFormat mpeg1_hwaccel_pixfmt_list_420[] = {
 #if CONFIG_MPEG1_NVDEC_HWACCEL
     AV_PIX_FMT_CUDA,
@@ -908,6 +920,7 @@ static int mpeg_decode_postinit(AVCodecContext *avctx)
 {
     Mpeg1Context *s1  = avctx->priv_data;
     MpegEncContext *s = &s1->mpeg_enc_ctx;
+    uint8_t old_permutation[64];
     int ret;
 
     if (avctx->codec_id == AV_CODEC_ID_MPEG1VIDEO) {
@@ -1027,8 +1040,22 @@ FF_ENABLE_DEPRECATION_WARNINGS
 
         avctx->pix_fmt = mpeg_get_pixelformat(avctx);
 
+        //+clair add 2021-11-11
+        avctx->idct_algo = FF_IDCT_CNM_MP2;
+        //-clair add
+
+        /* Quantization matrices may need reordering
+         * if DCT permutation is changed. */
+        memcpy(old_permutation, s->idsp.idct_permutation, 64 * sizeof(uint8_t));
+
+        ff_mpv_idct_init(s);
         if ((ret = ff_mpv_common_init(s)) < 0)
             return ret;
+
+        quant_matrix_rebuild(s->intra_matrix,        old_permutation, s->idsp.idct_permutation);
+        quant_matrix_rebuild(s->inter_matrix,        old_permutation, s->idsp.idct_permutation);
+        quant_matrix_rebuild(s->chroma_intra_matrix, old_permutation, s->idsp.idct_permutation);
+        quant_matrix_rebuild(s->chroma_inter_matrix, old_permutation, s->idsp.idct_permutation);
 
         s1->mpeg_enc_ctx_allocated = 1;
     }

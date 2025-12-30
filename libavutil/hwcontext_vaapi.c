@@ -175,10 +175,19 @@ static const VAAPIFormatDescriptor vaapi_format_map[] = {
     // support for Y410, so we must fudge the mapping here.
     MAP(Y410, YUV444_10,  XV30, 0),
 #endif
+#ifdef VA_FOURCC_Q410
+    MAP(Q410, YUV444_10,  YUV444P10LE, 0),
+#endif
 #ifdef VA_FOURCC_Y412
     // libva doesn't include a fourcc for XV36 and the driver only declares
     // support for Y412, so we must fudge the mapping here.
     MAP(Y412, YUV444_12,  XV36, 0),
+#endif
+#ifdef VA_FOURCC_R8G8B8
+    MAP(R8G8B8, RGB32,  RGB24, 0),
+#endif
+#ifdef VA_FOURCC_B8G8R8
+    MAP(B8G8R8, RGB32,  BGR24, 0),
 #endif
 };
 #undef MAP

@@ -540,7 +540,8 @@ static int get_pixel_format(AVCodecContext *avctx)
                      CONFIG_AV1_NVDEC_HWACCEL + \
                      CONFIG_AV1_VAAPI_HWACCEL + \
                      CONFIG_AV1_VDPAU_HWACCEL + \
-                     CONFIG_AV1_VULKAN_HWACCEL)
+                     CONFIG_AV1_VULKAN_HWACCEL + \
+                     CONFIG_AV1_MTDEC_HWACCEL)
     enum AVPixelFormat pix_fmts[HWACCEL_MAX + 2], *fmtp = pix_fmts;
 
     if (pix_fmt == AV_PIX_FMT_NONE)
@@ -570,6 +571,9 @@ static int get_pixel_format(AVCodecContext *avctx)
 #if CONFIG_AV1_VULKAN_HWACCEL
         *fmtp++ = AV_PIX_FMT_VULKAN;
 #endif
+#if CONFIG_AV1_MTDEC_HWACCEL
+        *fmtp++ = AV_PIX_FMT_MUSA;
+#endif
         break;
     case AV_PIX_FMT_YUV420P10:
 #if CONFIG_AV1_DXVA2_HWACCEL
@@ -593,6 +597,9 @@ static int get_pixel_format(AVCodecContext *avctx)
 #endif
 #if CONFIG_AV1_VULKAN_HWACCEL
         *fmtp++ = AV_PIX_FMT_VULKAN;
+#endif
+#if CONFIG_AV1_MTDEC_HWACCEL
+        *fmtp++ = AV_PIX_FMT_MUSA;
 #endif
         break;
     case AV_PIX_FMT_YUV420P12:
@@ -1636,7 +1643,9 @@ const FFCodec ff_av1_decoder = {
 #if CONFIG_AV1_VULKAN_HWACCEL
         HWACCEL_VULKAN(av1),
 #endif
-
+#if CONFIG_AV1_MTDEC_HWACCEL
+        HWACCEL_MTDEC(av1),
+#endif
         NULL
     },
 };

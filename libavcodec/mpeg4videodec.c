@@ -3093,6 +3093,13 @@ int ff_mpeg4_workaround_bugs(AVCodecContext *avctx)
         return 1;
     }
 
+    //+clair add 2021-11-17
+    if (CONFIG_MPEG4_DECODER && ctx->divx_build >= 0 && s->codec_id == AV_CODEC_ID_MPEG4 && avctx->idct_algo != FF_IDCT_CNM_DIVX) {
+        avctx->idct_algo = FF_IDCT_CNM_DIVX;
+        ff_mpv_idct_init(s);
+    }
+    //-clair add
+
     return 0;
 }
 
@@ -3811,6 +3818,8 @@ static av_cold int decode_init(AVCodecContext *avctx)
     ctx->xvid_build   =
     ctx->lavc_build   = -1;
 
+    
+    
     if ((ret = ff_h263_decode_init(avctx)) < 0)
         return ret;
 
