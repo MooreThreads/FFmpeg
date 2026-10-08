@@ -420,6 +420,119 @@ typedef struct H264RawFiller {
     uint32_t filler_size;
 } H264RawFiller;
 
+typedef struct H264RawPrefixSvc {
+    uint8_t store_ref_base_pic_flag;
+    uint8_t additional_prefix_nal_unit_extension_flag;
+} H264RawPrefixSvc;
+
+typedef struct H264RawSvcExtension {
+    H264RawNALUnitHeader nal_unit_header;
+
+    uint8_t idr_flag;
+    uint8_t priority_id;
+    uint8_t no_inter_layer_pred_flag;
+    uint8_t dependency_id;
+    uint8_t quality_id;
+    uint8_t temporal_id;
+    uint8_t use_ref_base_pic_flag;
+    uint8_t discardable_flag;
+    uint8_t output_flag;
+    uint8_t reserved_three_2bits;
+
+    H264RawPrefixSvc prefix_nal_unit_svc;
+} H264RawSvcExtension;
+
+typedef struct H264RawSEITemporalHRD {
+    uint8_t num_of_temporal_layers_in_base_layer_minus1;
+    uint8_t sei_temporal_id[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t sei_timing_info_present_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint32_t sei_num_units_in_tick[H264_MAX_TEMPORAL_LAYERS];
+    uint32_t sei_time_scale[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t sei_fixed_frame_rate_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t sei_nal_hrd_parameters_present_flag[H264_MAX_TEMPORAL_LAYERS];
+    // Todo:add nal hrd_parameters
+    uint8_t sei_vcl_hrd_parameters_present_flag[H264_MAX_TEMPORAL_LAYERS];
+    // Todo: add vcl hrd_parameters
+    uint8_t sei_low_delay_hrd_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t sei_pic_struct_present_flag[H264_MAX_TEMPORAL_LAYERS];
+} H264RawSEITemporalHRD;
+
+typedef struct H264RawSEIScalabilityInfo {
+    uint8_t temporal_id_nesting_flag;
+    uint8_t priority_layer_info_present_flag;
+    uint8_t priority_id_setting_flag;
+    uint8_t num_layers_minus1;
+
+    // for( i = 0; i <= num_layers_minus1; i++ )
+    uint32_t layer_id[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t priority_id[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t discardable_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t dependency_id[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t quality_id[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t temporal_id[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t sub_pic_layer_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t sub_region_layer_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t iroi_division_info_present_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t profile_level_info_present_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t bitrate_info_present_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t frm_rate_info_present_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t frm_size_info_present_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t layer_dependency_info_present_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t parameter_sets_info_present_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t bitstream_restriction_info_present_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t exact_inter_layer_pred_flag[H264_MAX_TEMPORAL_LAYERS];
+
+    // if( sub_pic_layer_flag[i] || iroi_division_info_present_flag[i] )
+    uint8_t exact_sample_value_match_flag[H264_MAX_TEMPORAL_LAYERS];
+
+    uint8_t layer_conversion_flag[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t layer_output_flag[H264_MAX_TEMPORAL_LAYERS];
+
+    // if( profile_level_info_present_flag[i] )
+    uint32_t layer_profile_level_idc[H264_MAX_TEMPORAL_LAYERS];
+
+    // if( bitrate_info_present_flag[i] )
+    uint16_t avg_bitrate[H264_MAX_TEMPORAL_LAYERS];
+    uint16_t max_bitrate_layer[H264_MAX_TEMPORAL_LAYERS];
+    uint16_t max_bitrate_layer_representation[H264_MAX_TEMPORAL_LAYERS];
+    uint16_t max_bitrate_calc_window[H264_MAX_TEMPORAL_LAYERS];
+
+    // if( frm_rate_info_present_flag[i] )
+    uint8_t constant_frm_rate_idc[H264_MAX_TEMPORAL_LAYERS];
+    uint16_t avg_frm_rate[H264_MAX_TEMPORAL_LAYERS];
+
+    /**************************************************************************
+     * Unused and not finished 
+    // if( frm_size_info_present_flag[i] || iroi_division_info_present_flag[i] )
+    uint8_t frm_width_in_mbs_minus1[H264_MAX_TEMPORAL_LAYERS];
+    uint8_t frm_height_in_mbs_minus1[H264_MAX_TEMPORAL_LAYERS];
+
+    // if( !dynamic_rect_flag[i] )
+    uint16_t horizontal_offset[H264_MAX_TEMPORAL_LAYERS];
+    uint16_t vertical_offset[H264_MAX_TEMPORAL_LAYERS];
+    uint16_t region_width[H264_MAX_TEMPORAL_LAYERS];
+    uint16_t region_height[H264_MAX_TEMPORAL_LAYERS];
+
+    // if( sub_pic_layer_flag[i] )
+    uint32_t roi_id[H264_MAX_TEMPORAL_LAYERS];
+    // if( iroi_division_info_present_flag[ i ] )
+    uint8_t iroi_grid_flag[H264_MAX_TEMPORAL_LAYERS];
+    // if( iroi_grid_flag[i] )
+    uint32_t grid_width_in_mbs_minus1[H264_MAX_TEMPORAL_LAYERS];
+    uint32_t grid_height_in_mbs_minus1[H264_MAX_TEMPORAL_LAYERS];
+    // else if( !iroi_grid_flag[i] )
+    uint32_t num_rois_minus1[H264_MAX_TEMPORAL_LAYERS];
+    // for(j = 0; j <= num_rois_minus1[ i ]; j++ )
+    uint32_t first_mb_in_roi[H264_MAX_TEMPORAL_LAYERS][H264_MAX_MB_WIDTH];
+    uint32_t roi_width_in_mbs_minus1[H264_MAX_TEMPORAL_LAYERS][H264_MAX_MB_WIDTH];
+    uint32_t roi_height_in_mbs_minus1[H264_MAX_TEMPORAL_LAYERS][H264_MAX_MB_HEIGHT];
+
+    // if( layer_dependency_info_present_flag[i] )
+    uint32_t num_directly_dependent_layers[H264_MAX_TEMPORAL_LAYERS];
+    // for( j = 0; j < num_directly_dependent_layers[ i ]; j++ )
+    uint32_t directly_dependent_layer_id_delta_minus1[H264_MAX_TEMPORAL_LAYERS][255];
+    ********************************************************************************/
+} H264RawSEIScalabilityInfo;
 
 typedef struct CodedBitstreamH264Context {
     // Reader/writer context in common with the H.265 implementation.

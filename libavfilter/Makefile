@@ -208,6 +208,8 @@ OBJS-$(CONFIG_BBOX_FILTER)                   += bbox.o vf_bbox.o
 OBJS-$(CONFIG_BENCH_FILTER)                  += f_bench.o
 OBJS-$(CONFIG_BILATERAL_FILTER)              += vf_bilateral.o
 OBJS-$(CONFIG_BILATERAL_CUDA_FILTER)         += vf_bilateral_cuda.o vf_bilateral_cuda.ptx.o
+OBJS-$(CONFIG_BILATERAL_MUSA_FILTER)         += vf_bilateral_musa.o musa/vf_bilateral_musa.mu.o \
+                                                musa/load_helper.o
 OBJS-$(CONFIG_BITPLANENOISE_FILTER)          += vf_bitplanenoise.o
 OBJS-$(CONFIG_BLACKDETECT_FILTER)            += vf_blackdetect.o
 OBJS-$(CONFIG_BLACKDETECT_VULKAN_FILTER)     += vf_blackdetect_vulkan.o
@@ -223,6 +225,8 @@ OBJS-$(CONFIG_BOXBLUR_OPENCL_FILTER)         += vf_avgblur_opencl.o opencl.o \
 OBJS-$(CONFIG_BWDIF_FILTER)                  += vf_bwdif.o bwdifdsp.o yadif_common.o
 OBJS-$(CONFIG_BWDIF_CUDA_FILTER)             += vf_bwdif_cuda.o vf_bwdif_cuda.ptx.o \
                                                 yadif_common.o
+OBJS-$(CONFIG_BWDIF_MUSA_FILTER)             += vf_bwdif_musa.o musa/vf_bwdif_musa.mu.o \
+                                                yadif_common.o musa/load_helper.o
 OBJS-$(CONFIG_BWDIF_VULKAN_FILTER)           += vf_bwdif_vulkan.o yadif_common.o vulkan.o vulkan_filter.o
 OBJS-$(CONFIG_CAS_FILTER)                    += vf_cas.o
 OBJS-$(CONFIG_CCREPACK_FILTER)               += vf_ccrepack.o
@@ -230,6 +234,8 @@ OBJS-$(CONFIG_CHROMABER_VULKAN_FILTER)       += vf_chromaber_vulkan.o vulkan.o v
 OBJS-$(CONFIG_CHROMAHOLD_FILTER)             += vf_chromakey.o
 OBJS-$(CONFIG_CHROMAKEY_FILTER)              += vf_chromakey.o
 OBJS-$(CONFIG_CHROMAKEY_CUDA_FILTER)         += vf_chromakey_cuda.o vf_chromakey_cuda.ptx.o
+OBJS-$(CONFIG_CHROMAKEY_MUSA_FILTER)         += vf_chromakey_musa.o musa/vf_chromakey_musa.mu.o \
+                                                musa/load_helper.o
 
 OBJS-$(CONFIG_CHROMANR_FILTER)               += vf_chromanr.o
 OBJS-$(CONFIG_CHROMASHIFT_FILTER)            += vf_chromashift.o
@@ -252,6 +258,9 @@ OBJS-$(CONFIG_COLORSPACE_FILTER)             += vf_colorspace.o colorspacedsp.o
 OBJS-$(CONFIG_COLORSPACE_CUDA_FILTER)        += vf_colorspace_cuda.o \
                                                 vf_colorspace_cuda.ptx.o \
                                                 cuda/load_helper.o
+OBJS-$(CONFIG_COLORSPACE_MUSA_FILTER)        += vf_colorspace_musa.o \
+                                                musa/vf_colorspace_musa.mu.o \
+                                                musa/load_helper.o
 OBJS-$(CONFIG_COLORTEMPERATURE_FILTER)       += vf_colortemperature.o
 OBJS-$(CONFIG_CONVOLUTION_FILTER)            += vf_convolution.o
 OBJS-$(CONFIG_CONVOLUTION_OPENCL_FILTER)     += vf_convolution_opencl.o opencl.o \
@@ -355,6 +364,7 @@ OBJS-$(CONFIG_HUESATURATION_FILTER)          += vf_huesaturation.o
 OBJS-$(CONFIG_HWDOWNLOAD_FILTER)             += vf_hwdownload.o
 OBJS-$(CONFIG_HWMAP_FILTER)                  += vf_hwmap.o
 OBJS-$(CONFIG_HWUPLOAD_CUDA_FILTER)          += vf_hwupload_cuda.o
+OBJS-$(CONFIG_HWUPLOAD_MUSA_FILTER)          += vf_hwupload_musa.o
 OBJS-$(CONFIG_HWUPLOAD_FILTER)               += vf_hwupload.o
 OBJS-$(CONFIG_HYSTERESIS_FILTER)             += vf_hysteresis.o framesync.o
 OBJS-$(CONFIG_ICCDETECT_FILTER)              += vf_iccdetect.o fflcms2.o
@@ -422,6 +432,8 @@ OBJS-$(CONFIG_OSCILLOSCOPE_FILTER)           += vf_datascope.o
 OBJS-$(CONFIG_OVERLAY_FILTER)                += vf_overlay.o framesync.o
 OBJS-$(CONFIG_OVERLAY_CUDA_FILTER)           += vf_overlay_cuda.o framesync.o vf_overlay_cuda.ptx.o \
                                                 cuda/load_helper.o
+OBJS-$(CONFIG_OVERLAY_MUSA_FILTER)           += vf_overlay_musa.o framesync.o musa/vf_overlay_musa.mu.o \
+                                                musa/load_helper.o
 OBJS-$(CONFIG_OVERLAY_OPENCL_FILTER)         += vf_overlay_opencl.o opencl.o \
                                                 opencl/overlay.o framesync.o
 OBJS-$(CONFIG_OVERLAY_QSV_FILTER)            += vf_overlay_qsv.o framesync.o
@@ -430,6 +442,7 @@ OBJS-$(CONFIG_OVERLAY_VULKAN_FILTER)         += vf_overlay_vulkan.o vulkan.o vul
 OBJS-$(CONFIG_OWDENOISE_FILTER)              += vf_owdenoise.o
 OBJS-$(CONFIG_PAD_FILTER)                    += vf_pad.o
 OBJS-$(CONFIG_PAD_CUDA_FILTER)               += vf_pad_cuda.o vf_pad_cuda.ptx.o cuda/load_helper.o
+OBJS-$(CONFIG_PAD_MUSA_FILTER)               += vf_pad_musa.o musa/vf_pad_musa.mu.o musa/load_helper.o
 OBJS-$(CONFIG_PAD_OPENCL_FILTER)             += vf_pad_opencl.o opencl.o opencl/pad.o
 OBJS-$(CONFIG_PALETTEGEN_FILTER)             += vf_palettegen.o palette.o
 OBJS-$(CONFIG_PALETTEUSE_FILTER)             += vf_paletteuse.o framesync.o palette.o
@@ -475,6 +488,8 @@ OBJS-$(CONFIG_SCALE_D3D11_FILTER)            += vf_scale_d3d11.o scale_eval.o
 OBJS-$(CONFIG_SCALE_D3D12_FILTER)            += vf_scale_d3d12.o scale_eval.o
 OBJS-$(CONFIG_SCALE_CUDA_FILTER)             += vf_scale_cuda.o scale_eval.o \
                                                 vf_scale_cuda.ptx.o cuda/load_helper.o
+OBJS-$(CONFIG_SCALE_MUSA_FILTER)             += vf_scale_musa.o scale_eval.o \
+                                                musa/vf_scale_musa.mu.o musa/load_helper.o
 OBJS-$(CONFIG_SCALE_NPP_FILTER)              += vf_scale_npp.o scale_eval.o
 OBJS-$(CONFIG_SCALE_QSV_FILTER)              += vf_vpp_qsv.o
 OBJS-$(CONFIG_SCALE_VAAPI_FILTER)            += vf_scale_vaapi.o scale_eval.o vaapi_vpp.o
@@ -533,6 +548,8 @@ OBJS-$(CONFIG_THRESHOLD_FILTER)              += vf_threshold.o framesync.o
 OBJS-$(CONFIG_THUMBNAIL_FILTER)              += vf_thumbnail.o
 OBJS-$(CONFIG_THUMBNAIL_CUDA_FILTER)         += vf_thumbnail_cuda.o vf_thumbnail_cuda.ptx.o \
                                                 cuda/load_helper.o
+OBJS-$(CONFIG_THUMBNAIL_MUSA_FILTER)         += vf_thumbnail_musa.o musa/vf_thumbnail_musa.mu.o \
+                                                musa/load_helper.o
 OBJS-$(CONFIG_TILE_FILTER)                   += vf_tile.o
 OBJS-$(CONFIG_TILTANDSHIFT_FILTER)           += vf_tiltandshift.o
 OBJS-$(CONFIG_TINTERLACE_FILTER)             += vf_tinterlace.o
@@ -588,6 +605,8 @@ OBJS-$(CONFIG_XSTACK_FILTER)                 += vf_stack.o framesync.o
 OBJS-$(CONFIG_YADIF_FILTER)                  += vf_yadif.o yadif_common.o
 OBJS-$(CONFIG_YADIF_CUDA_FILTER)             += vf_yadif_cuda.o vf_yadif_cuda.ptx.o \
                                                 yadif_common.o cuda/load_helper.o
+OBJS-$(CONFIG_YADIF_MUSA_FILTER)             += vf_yadif_musa.o musa/vf_yadif_musa.mu.o \
+                                                yadif_common.o musa/load_helper.o
 OBJS-$(CONFIG_YADIF_VIDEOTOOLBOX_FILTER)     += vf_yadif_videotoolbox.o \
                                                 metal/vf_yadif_videotoolbox.metallib.o \
                                                 metal/utils.o \
@@ -684,6 +703,7 @@ SKIPHEADERS-$(CONFIG_OPENCL)                 += opencl.h
 SKIPHEADERS-$(CONFIG_VAAPI)                  += vaapi_vpp.h stack_internal.h
 SKIPHEADERS-$(CONFIG_VULKAN)                 += vulkan_filter.h
 SKIPHEADERS-$(CONFIG_SCALE_CUDA_FILTER)      += vf_scale_cuda.h
+SKIPHEADERS-$(CONFIG_SCALE_MUSA_FILTER)      += vf_scale_musa.h
 
 TOOLS     = graph2dot
 TESTPROGS = drawutils filtfmts formats integral

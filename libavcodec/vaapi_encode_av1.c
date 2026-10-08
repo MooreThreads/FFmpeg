@@ -38,6 +38,31 @@ typedef struct VAAPIEncodeAV1Picture {
     int slot;
 } VAAPIEncodeAV1Picture;
 
+static const int qp_to_q_idx[2][52] = {
+    {
+        1,   1,   1,   1,   1,   2,
+        3,   4,   6,   7,   9,  11,
+       13,  16,  18,  22,  25,  29,
+       33,  38,  44,  50,  57,  65,
+       74,  84,  95, 101, 108, 116,
+      123, 130, 137, 143, 150, 156,
+      163, 169, 176, 182, 188, 194,
+      201, 207, 213, 219, 225, 231,
+      237, 243, 249, 255,
+    },
+    {
+        6,   7,   7,   9,  10,  11,
+       12,  13,  15,  17,  18,  20,
+       22,  25,  27,  30,  33,  37,
+       41,  45,  50,  55,  62,  69,
+       77,  86,  96, 102, 109, 116,
+      123, 130, 137, 143, 150, 157,
+      163, 169, 176, 182, 188, 194,
+      201, 207, 213, 219, 225, 231,
+      237, 243, 249, 255,
+    },
+};
+
 typedef struct VAAPIEncodeAV1Context {
     VAAPIEncodeContext common;
     AV1RawOBU sh; /**< sequence header.*/
@@ -124,6 +149,7 @@ static av_cold int vaapi_encode_av1_get_encoder_caps(AVCodecContext *avctx)
 
 static av_cold int vaapi_encode_av1_configure(AVCodecContext *avctx)
 {
+    FFHWBaseEncodeContext *base_ctx = avctx->priv_data;
     VAAPIEncodeContext     *ctx = avctx->priv_data;
     VAAPIEncodeAV1Context *priv = avctx->priv_data;
     int ret;
@@ -137,7 +163,13 @@ static av_cold int vaapi_encode_av1_configure(AVCodecContext *avctx)
     priv->cbc->trace_write_callback = vaapi_encode_av1_trace_write_log;
 
     if (ctx->rc_mode->quality) {
-        priv->q_idx_p = av_clip(ctx->rc_quality, 0, AV1_MAX_QUANT);
+        if (ctx->explicit_qp > 0 && ctx->explicit_qp < FF_ARRAY_ELEMS(qp_to_q_idx[0])) {
+            const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(base_ctx->input_frames->sw_format);
+            int depth_index = desc->comp[0].depth == 8 ? 0 : 1;
+            priv->q_idx_p = av_clip(qp_to_q_idx[depth_index][ctx->explicit_qp], 0, AV1_MAX_QUANT);
+        } else {
+            priv->q_idx_p = av_clip(ctx->rc_quality, 0, AV1_MAX_QUANT);
+        }
         if (fabs(avctx->i_quant_factor) > 0.0)
             priv->q_idx_idr =
                 av_clip((fabs(avctx->i_quant_factor) * priv->q_idx_p  +
@@ -217,11 +249,12 @@ static int vaapi_encode_av1_set_tile(AVCodecContext *avctx)
 {
     VAAPIEncodeAV1Context *priv = avctx->priv_data;
     int mi_cols, mi_rows, sb_shift, sb_size;
-    int max_tile_area_sb, max_tile_area_sb_varied;
+    int max_tile_area_sb;
     int tile_width_sb, tile_height_sb, widest_tile_sb;
-    int tile_cols, tile_rows;
-    int min_log2_tiles;
-    int i;
+    int min_log2_tiles, tile_col_size_sb, max_tile_height_sb;
+    int i, rest;
+    const int W6_AV1_LOG2_MAX_TILE_COLS = 1; // hw limit
+    const int W6_AV1_LOG2_MAX_TILE_ROWS = 4; // hw limit
 
     if (priv->tile_cols > AV1_MAX_TILE_COLS ||
         priv->tile_rows > AV1_MAX_TILE_ROWS) {
@@ -242,89 +275,126 @@ static int vaapi_encode_av1_set_tile(AVCodecContext *avctx)
     max_tile_area_sb = AV1_MAX_TILE_AREA  >> (2 * sb_size);
 
     priv->min_log2_tile_cols = tile_log2(priv->max_tile_width_sb, priv->sb_cols);
-    priv->max_log2_tile_cols = tile_log2(1, FFMIN(priv->sb_cols, AV1_MAX_TILE_COLS));
-    priv->max_log2_tile_rows = tile_log2(1, FFMIN(priv->sb_rows, AV1_MAX_TILE_ROWS));
+    priv->max_log2_tile_cols = tile_log2(1, FFMIN(priv->sb_cols, 1 << W6_AV1_LOG2_MAX_TILE_COLS));
+    priv->max_log2_tile_rows = tile_log2(1, FFMIN(priv->sb_rows, 1 << W6_AV1_LOG2_MAX_TILE_ROWS));
     min_log2_tiles = FFMAX(priv->min_log2_tile_cols,
                            tile_log2(max_tile_area_sb, priv->sb_rows * priv->sb_cols));
-
-    tile_cols = av_clip(priv->tile_cols, (priv->sb_cols + priv->max_tile_width_sb - 1) / priv->max_tile_width_sb, priv->sb_cols);
-
-    if (!priv->tile_cols)
-        priv->tile_cols = tile_cols;
-    else if (priv->tile_cols != tile_cols){
-        av_log(avctx, AV_LOG_ERROR, "Invalid tile cols %d, should be in range of %d~%d\n",
-               priv->tile_cols,
-               (priv->sb_cols + priv->max_tile_width_sb - 1) / priv->max_tile_width_sb,
-               priv->sb_cols);
-        return AVERROR(EINVAL);
+    priv->min_log2_tile_rows = FFMAX(min_log2_tiles, 0);
+    max_tile_area_sb = priv->sb_cols * priv->sb_rows;
+    if (min_log2_tiles > 0)
+    {
+        max_tile_area_sb >>= (min_log2_tiles + 1);
     }
 
-    priv->tile_cols_log2 = tile_log2(1, priv->tile_cols);
-    tile_width_sb = (priv->sb_cols + (1 << priv->tile_cols_log2) - 1) >>
-                    priv->tile_cols_log2;
-
-    if (priv->tile_rows > priv->sb_rows) {
-        av_log(avctx, AV_LOG_ERROR, "Invalid tile rows %d, should be less than %d.\n",
-               priv->tile_rows, priv->sb_rows);
-        return AVERROR(EINVAL);
+    if (priv->tile_cols_log2 != av_clip(priv->tile_cols_log2, priv->min_log2_tile_cols, priv->max_log2_tile_cols) ||
+        priv->tile_rows_log2 != av_clip(priv->tile_rows_log2, priv->min_log2_tile_rows, priv->max_log2_tile_rows)) {
+        priv->tile_cols_log2 = av_clip(priv->tile_cols_log2, priv->min_log2_tile_cols, priv->max_log2_tile_cols);
+        priv->tile_rows_log2 = av_clip(priv->tile_rows_log2, priv->min_log2_tile_rows, priv->max_log2_tile_rows);
+        av_log(avctx, AV_LOG_DEBUG, "Correct tile cols/rows log2 to %d/%d.\n",
+               priv->tile_cols_log2, priv->tile_rows_log2);
     }
 
-    /** Try user setting tile rows number first. */
-    tile_rows = priv->tile_rows ? priv->tile_rows : 1;
-    for (; tile_rows <= priv->sb_rows && tile_rows <= AV1_MAX_TILE_ROWS; tile_rows++) {
-        /** try uniformed tile. */
-        priv->tile_rows_log2 = tile_log2(1, tile_rows);
-        if ((priv->sb_cols + tile_width_sb - 1) / tile_width_sb == priv->tile_cols) {
-            for (i = 0; i < priv->tile_cols - 1; i++)
-                priv->width_in_sbs_minus_1[i] = tile_width_sb - 1;
-            priv->width_in_sbs_minus_1[i] = priv->sb_cols - (priv->tile_cols - 1) * tile_width_sb - 1;
-
-            tile_height_sb = (priv->sb_rows + (1 << priv->tile_rows_log2) - 1) >>
-                             priv->tile_rows_log2;
-
-            if ((priv->sb_rows + tile_height_sb - 1) / tile_height_sb == tile_rows &&
-                tile_height_sb <= max_tile_area_sb / tile_width_sb) {
-                for (i = 0; i < tile_rows - 1; i++)
-                    priv->height_in_sbs_minus_1[i] = tile_height_sb - 1;
-                priv->height_in_sbs_minus_1[i] = priv->sb_rows - (tile_rows - 1) * tile_height_sb - 1;
-
-                priv->uniform_tile = 1;
-                priv->min_log2_tile_rows = FFMAX(min_log2_tiles - priv->tile_cols_log2, 0);
-
-                break;
-            }
-        }
-
-        /** try non-uniformed tile. */
+    // wave627
+    while(1)
+    {
+        int loop = 0;
+        int num_col_tiles = (1 << priv->tile_cols_log2);
         widest_tile_sb = 0;
-        for (i = 0; i < priv->tile_cols; i++) {
-            priv->width_in_sbs_minus_1[i] = (i + 1) * priv->sb_cols / priv->tile_cols - i * priv->sb_cols / priv->tile_cols - 1;
-            widest_tile_sb = FFMAX(widest_tile_sb, priv->width_in_sbs_minus_1[i] + 1);
+        tile_col_size_sb = priv->sb_cols / num_col_tiles;
+        if (priv->sb_cols < 10 || priv->sb_cols % 2 == 0)
+        {
+            tile_col_size_sb = (tile_col_size_sb + 2 - 1) / 2 * 2;
         }
-
-        if (min_log2_tiles)
-            max_tile_area_sb_varied = (priv->sb_rows * priv->sb_cols) >> (min_log2_tiles + 1);
         else
-            max_tile_area_sb_varied = priv->sb_rows * priv->sb_cols;
-        priv->max_tile_height_sb = FFMAX(1, max_tile_area_sb_varied / widest_tile_sb);
-
-        if (tile_rows == av_clip(tile_rows, (priv->sb_rows + priv->max_tile_height_sb - 1) / priv->max_tile_height_sb, priv->sb_rows)) {
-            for (i = 0; i < tile_rows; i++)
-                priv->height_in_sbs_minus_1[i] = (i + 1) * priv->sb_rows / tile_rows - i * priv->sb_rows / tile_rows - 1;
-
+        {
+            tile_col_size_sb = (tile_col_size_sb + 2) / 2 * 2;
+        }
+        for (i = 0; i < num_col_tiles; i++)
+        {
+            int width_in_sb = tile_col_size_sb;
+            if (i == num_col_tiles - 1)
+            {
+                width_in_sb = priv->sb_cols - tile_col_size_sb * i;
+            }
+            if (width_in_sb < 4)
+            {
+                if (priv->tile_cols_log2 > 0)
+                {
+                    priv->tile_cols_log2--;
+                    loop = 1;
+                    break;
+                }
+                else
+                {
+                    av_log(avctx, AV_LOG_ERROR, "tile_width(%d) should be larger than or equal to 256 (HW limitaion).\n",
+                        width_in_sb << 4);
+                    return AVERROR(EINVAL);
+                }
+            }
+            widest_tile_sb = FFMAX(widest_tile_sb, width_in_sb);
+        }
+        if (!loop)
+        {
             break;
         }
-
-        /** Return invalid parameter if explicit tile rows is set. */
-        if (priv->tile_rows) {
-            av_log(avctx, AV_LOG_ERROR, "Invalid tile rows %d.\n", priv->tile_rows);
-            return AVERROR(EINVAL);
+    }
+    max_tile_height_sb = FFMAX(max_tile_area_sb / widest_tile_sb, 1);
+    max_tile_height_sb = FFMIN(max_tile_height_sb, 64); // 64 - hw limit
+    while(1)
+    {
+        int tile_row_size_sb = priv->sb_rows / (1 << priv->tile_rows_log2);
+        int max_height_in_sb = tile_row_size_sb;
+        if (tile_row_size_sb < 2)
+        {
+            if (priv->tile_rows_log2 > 0)
+            {
+                av_log(avctx, AV_LOG_ERROR, "tile_height(%d) should be larger than or equal to 128 (HW limitaion).\n", tile_row_size_sb << 4);
+                return AVERROR(EINVAL);
+            }
         }
+        if (priv->sb_rows % (1 << priv->tile_rows_log2) > 0)
+        {
+            max_height_in_sb++;
+        }
+        if (max_height_in_sb > max_tile_height_sb)
+        {
+            if (priv->tile_rows_log2 >= W6_AV1_LOG2_MAX_TILE_ROWS)
+            {
+                av_log(avctx, AV_LOG_ERROR,"tile_rows_log2(%d) should be less than or equal to 4 (HW limitaion)\n", priv->tile_rows_log2);
+                return AVERROR(EINVAL);
+            }
+            priv->tile_rows_log2++;
+            continue;
+        }
+        break;
     }
 
-    priv->tile_rows = tile_rows;
-    av_log(avctx, AV_LOG_DEBUG, "Setting tile cols/rows to %d/%d.\n",
-           priv->tile_cols, priv->tile_rows);
+    if (priv->tile_cols != (1 << priv->tile_cols_log2) || priv->tile_rows != (1 << priv->tile_rows_log2))
+    {
+        av_log(avctx, AV_LOG_INFO, "Correct tile cols/rows from %d/%d to %d/%d.\n",
+            priv->tile_cols, priv->tile_rows, 1 << priv->tile_cols_log2, 1 << priv->tile_rows_log2);
+        priv->tile_cols = 1 << priv->tile_cols_log2;
+        priv->tile_rows = 1 << priv->tile_rows_log2;
+    }
+
+    /** only support uniformed tile mode. */
+    tile_width_sb  = (priv->sb_cols + (1 << priv->tile_cols_log2) - 1) >> priv->tile_cols_log2;
+    tile_width_sb  = priv->sb_cols < 10 ? 4 : (tile_width_sb + 1) & 0xFE;
+    tile_height_sb = priv->sb_rows >> priv->tile_rows_log2;
+    if (priv->tile_cols == 1 && priv->tile_rows == 1)
+    {
+        priv->uniform_tile = 1;
+    }
+    else
+    {
+        priv->uniform_tile = 0;
+    }
+
+    for (i = 0; i < priv->tile_cols - 1; i++)
+        priv->width_in_sbs_minus_1[i] = tile_width_sb - 1;
+    priv->width_in_sbs_minus_1[i] = priv->sb_cols - (priv->tile_cols - 1) * tile_width_sb - 1;
+    for (i = 0, rest = priv->sb_rows % priv->tile_rows; i < priv->tile_rows; i++)
+        priv->height_in_sbs_minus_1[i] = tile_height_sb - 1 +(rest-- > 0 ? 1 : 0);
 
     /** check if tile cols/rows is supported by driver. */
     if (priv->attr_ext2.bits.max_tile_num_minus1) {
@@ -397,8 +467,10 @@ static int vaapi_encode_av1_init_sequence_params(AVCodecContext *avctx)
                                            avctx->color_trc       != AVCOL_TRC_UNSPECIFIED ||
                                            avctx->colorspace      != AVCOL_SPC_UNSPECIFIED),
         .color_range                    = avctx->color_range == AVCOL_RANGE_JPEG,
-        .subsampling_x                  = desc->log2_chroma_w,
-        .subsampling_y                  = desc->log2_chroma_h,
+        .subsampling_x                  = desc->nb_components == 1 ? 1 : desc->log2_chroma_w,
+        .subsampling_y                  = desc->nb_components == 1 ? 1 : desc->log2_chroma_h,
+        .mono_chrome                    = desc->nb_components == 1 ? 1 : 0,
+        .separate_uv_delta_q            = 0,
     };
 
     switch (avctx->chroma_sample_location) {
@@ -477,6 +549,7 @@ static int vaapi_encode_av1_init_picture_params(AVCodecContext *avctx,
     VAEncPictureParameterBufferAV1 *vpic = vaapi_pic->codec_picture_params;
     CodedBitstreamFragment          *obu = &priv->current_obu;
     CodedBitstreamAV1Context      *cbctx = priv->cbc->priv_data;
+    AV1RawSequenceHeader             *sh = &priv->sh.obu.sequence_header;
     FFHWBaseEncodePicture *ref;
     VAAPIEncodeAV1Picture *href;
     int slot, i;
@@ -517,13 +590,13 @@ static int vaapi_encode_av1_init_picture_params(AVCodecContext *avctx,
         fh->ref_order_hint[href->slot] = ref->display_order - href->last_idr_frame;
         vpic->ref_frame_ctrl_l0.fields.search_idx0 = AV1_REF_FRAME_LAST;
 
-        /** set the 2nd nearest frame in L0 as Golden frame. */
+        /** set the 2nd nearest frame in L0 as LAST2 frame. */
         if (pic->nb_refs[0] > 1) {
             ref = pic->refs[0][pic->nb_refs[0] - 2];
             href = ref->codec_priv;
-            fh->ref_frame_idx[3] = href->slot;
+            fh->ref_frame_idx[1] = href->slot;
             fh->ref_order_hint[href->slot] = ref->display_order - href->last_idr_frame;
-            vpic->ref_frame_ctrl_l0.fields.search_idx1 = AV1_REF_FRAME_GOLDEN;
+            vpic->ref_frame_ctrl_l0.fields.search_idx1 = AV1_REF_FRAME_LAST2;
         } else {
             fh->ref_order_hint[!href->slot] = cbctx->ref[!href->slot].order_hint;
         }
@@ -540,21 +613,22 @@ static int vaapi_encode_av1_init_picture_params(AVCodecContext *avctx,
 
         /** Use LAST_FRAME and BWDREF_FRAME for reference. */
         vpic->ref_frame_ctrl_l0.fields.search_idx0 = AV1_REF_FRAME_LAST;
-        vpic->ref_frame_ctrl_l1.fields.search_idx0 = AV1_REF_FRAME_BWDREF;
+        /* FW limitation todo check ? */
+        vpic->ref_frame_ctrl_l1.fields.search_idx0 = AV1_REF_FRAME_LAST2; //AV1_REF_FRAME_BWDREF;
 
         ref                            = pic->refs[0][pic->nb_refs[0] - 1];
         href                           = ref->codec_priv;
         hpic->last_idr_frame           = href->last_idr_frame;
         fh->primary_ref_frame          = href->slot;
         fh->ref_order_hint[href->slot] = ref->display_order - href->last_idr_frame;
-        for (i = 0; i < AV1_REF_FRAME_GOLDEN; i++) {
+        for (i = 0; i < 1; i++) {
             fh->ref_frame_idx[i] = href->slot;
         }
 
         ref                            = pic->refs[1][pic->nb_refs[1] - 1];
         href                           = ref->codec_priv;
         fh->ref_order_hint[href->slot] = ref->display_order - href->last_idr_frame;
-        for (i = AV1_REF_FRAME_GOLDEN; i < AV1_REFS_PER_FRAME; i++) {
+        for (i = 1; i < AV1_REFS_PER_FRAME; i++) {
             fh->ref_frame_idx[i] = href->slot;
         }
         break;
@@ -601,6 +675,14 @@ static int vaapi_encode_av1_init_picture_params(AVCodecContext *avctx,
 
     if (fh->frame_type == AV1_FRAME_KEY || fh->error_resilient_mode)
         fh->primary_ref_frame = AV1_PRIMARY_REF_NONE;
+
+    if (fh->base_q_idx > 0)
+        fh->delta_q_present = 1;
+
+    if (sh->enable_cdef)
+        fh->cdef_damping_minus_3 = fh->base_q_idx >> 6;
+
+    fh->context_update_tile_id = fh->tile_cols * fh->tile_rows - 1;
 
     vpic->base_qindex          = fh->base_q_idx;
     vpic->frame_width_minus_1  = fh->frame_width_minus_1;
@@ -840,8 +922,15 @@ end:
 }
 
 static const VAAPIEncodeProfile vaapi_encode_av1_profiles[] = {
+    { AV_PROFILE_AV1_MAIN,  8, 1, 0, 0, VAProfileAV1Profile0 },
     { AV_PROFILE_AV1_MAIN,  8, 3, 1, 1, VAProfileAV1Profile0 },
     { AV_PROFILE_AV1_MAIN, 10, 3, 1, 1, VAProfileAV1Profile0 },
+    { AV_PROFILE_AV1_HIGH,  8, 3, 0, 0, VAProfileAV1Profile1 },
+    { AV_PROFILE_AV1_HIGH, 10, 3, 0, 0, VAProfileAV1Profile1 },
+#if HAVE_VA_PROFILE_AV1_PROFILE2
+    { AV_PROFILE_AV1_PROFESSIONAL,  8, 3, 1, 0, VAProfileAV1Profile2 },
+    { AV_PROFILE_AV1_PROFESSIONAL, 10, 3, 1, 0, VAProfileAV1Profile2 },
+#endif
     { AV_PROFILE_UNKNOWN }
 };
 
@@ -974,6 +1063,8 @@ static const AVOption vaapi_encode_av1_options[] = {
     HW_BASE_ENCODE_COMMON_OPTIONS,
     VAAPI_ENCODE_COMMON_OPTIONS,
     VAAPI_ENCODE_RC_OPTIONS,
+    { "qp", "use constant quantizer mode", OFFSET(common.explicit_qp), AV_OPT_TYPE_INT,
+      { .i64 = 0 }, 0, 51, FLAGS },
     { "profile", "Set profile (seq_profile)",
       OFFSET(profile), AV_OPT_TYPE_INT,
       { .i64 = AV_PROFILE_UNKNOWN }, AV_PROFILE_UNKNOWN, 0xff, FLAGS, .unit = "profile" },
@@ -983,6 +1074,7 @@ static const AVOption vaapi_encode_av1_options[] = {
     { PROFILE("main",               AV_PROFILE_AV1_MAIN) },
     { PROFILE("high",               AV_PROFILE_AV1_HIGH) },
     { PROFILE("professional",       AV_PROFILE_AV1_PROFESSIONAL) },
+    { PROFILE("pro",                AV_PROFILE_AV1_PROFESSIONAL) },
 #undef PROFILE
 
     { "tier", "Set tier (seq_tier)",
@@ -1025,6 +1117,10 @@ static const FFCodecDefault vaapi_encode_av1_defaults[] = {
     { "b",              "0"   },
     { "bf",             "2"   },
     { "g",              "120" },
+    { "i_qfactor",      "1"   },
+    { "i_qoffset",      "0"   },
+    { "b_qfactor",      "6/5" },
+    { "b_qoffset",      "0"   },
     { "qmin",           "1"   },
     { "qmax",           "255" },
     { "refs",           "0"   },

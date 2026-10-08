@@ -489,6 +489,8 @@ static const VAAPIEncodeProfile vaapi_encode_mjpeg_profiles[] = {
     { AV_PROFILE_MJPEG_HUFFMAN_BASELINE_DCT,
             8, 3, 1, 0, VAProfileJPEGBaseline },
     { AV_PROFILE_MJPEG_HUFFMAN_BASELINE_DCT,
+            8, 3, 0, 1, VAProfileJPEGBaseline },
+    { AV_PROFILE_MJPEG_HUFFMAN_BASELINE_DCT,
             8, 3, 0, 0, VAProfileJPEGBaseline },
     { AV_PROFILE_UNKNOWN }
 };

@@ -386,6 +386,9 @@ static int vaapi_vc1_start_frame(AVCodecContext *avctx,
         break;
     }
 
+    pic_param.va_reserved[0] = v->res_rtm_flag;
+    pic_param.va_reserved[1] = v->postprocflag;
+
     err = ff_vaapi_decode_make_param_buffer(avctx, pic,
                                             VAPictureParameterBufferType,
                                             &pic_param, sizeof(pic_param));
@@ -461,6 +464,8 @@ static int vaapi_vc1_end_frame(AVCodecContext *avctx)
     ret = ff_vaapi_decode_issue(avctx, pic);
     if (ret < 0)
         goto fail;
+
+    ff_mpeg_draw_horiz_band(s, 0, s->avctx->height);
 
 fail:
     return ret;

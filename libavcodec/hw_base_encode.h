@@ -80,6 +80,10 @@ typedef struct FFHWBaseEncodePicture {
     int             encode_issued;
     int             encode_complete;
 
+    //+MT add: temporal layer id when hierarchical temporal layers are used
+    int             temporal_id;
+    //-MT add
+
     AVFrame        *input_image;
     AVFrame        *recon_image;
 
@@ -192,6 +196,12 @@ typedef struct FFHWBaseEncodeContext {
     int gop_counter;
     int end_of_stream;
     int p_to_gpb;
+
+    //+MT add: number of temporal layers (1 = no temporal layering)
+    int             nb_temporal_layers;
+    // Reference picture of the base temporal layer.
+    FFHWBaseEncodePicture *base_layer;
+    //-MT add
 
     // The number of L0/L1 references supported by the driver.
     int             ref_l0;

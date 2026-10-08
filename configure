@@ -362,6 +362,10 @@ External library support:
   --enable-libvpl          enable Intel oneVPL code via libvpl if libmfx is not used [no]
   --enable-libnpp          enable Nvidia Performance Primitives-based code [no]
   --enable-mmal            enable Broadcom Multi-Media Abstraction Layer (Raspberry Pi) via MMAL [no]
+  --disable-ffmtcodec      disable dynamically linked MooreThreads code [autodetect]
+  --disable-mtenc          disable MooreThreads video encoding code [autodetect]
+  --disable-muvid          disable MooreThreads MUVID support [autodetect]
+  --disable-mtdec          disable MooreThreads video decoding acceleration (via hwaccel) [autodetect]
   --disable-nvdec          disable Nvidia video decoding acceleration (via hwaccel) [autodetect]
   --disable-nvenc          disable Nvidia video encoding code [autodetect]
   --enable-omx             enable OpenMAX IL code [no]
@@ -408,6 +412,7 @@ Toolchain options:
   --dep-cc=DEPCC           use dependency generator DEPCC [$cc_default]
   --glslc=GLSLC            use GLSL compiler GLSLC [$glslc_default]
   --nvcc=NVCC              use Nvidia CUDA compiler NVCC or clang [$nvcc_default]
+  --mcc=MCC                use MUSA compiler MCC [$mcc_default]
   --ld=LD                  use linker LD [$ld_default]
   --metalcc=METALCC        use metal compiler METALCC [$metalcc_default]
   --metallib=METALLIB      use metal linker METALLIB [$metallib_default]
@@ -433,6 +438,7 @@ Toolchain options:
   --optflags=OPTFLAGS      override optimization-related compiler flags
   --glslcflags=GLSLCFLAGS  extra glslc flags [$glslcflags_default]
   --nvccflags=NVCCFLAGS    override nvcc flags [$nvccflags_default]
+  --mccflags=MCCFLAGS      override mcc flags [$mccflags_default]
   --build-suffix=SUFFIX    library name suffix []
   --enable-pic             build position-independent code
   --enable-thumb           compile for Thumb instruction set
@@ -1147,6 +1153,26 @@ check_nvcc() {
     test_nvcc "$@" <<EOF && enable $name
 extern "C" {
     __global__ void hello(unsigned char *data) {}
+}
+EOF
+}
+
+test_mcc(){
+    log test_mcc "$@"
+    cat > $TMPMU
+    log_file $TMPMU
+    test_cmd $mcc $mccflags -o $TMPO $TMPMU
+}
+
+check_mcc() {
+    log check_mcc "$@"
+    name=$1
+    shift 1
+    disabled $name && return
+    disable $name
+    test_mcc "$@" <<EOF && enable $name
+extern "C" {
+    __global__ void hello(const unsigned char *data) {}
 }
 EOF
 }
@@ -2132,8 +2158,14 @@ HWACCEL_AUTODETECT_LIBRARY_LIST="
     d3d11va
     d3d12va
     dxva2
+    ffmtcodec
     ffnvcodec
     libdrm
+    mtdec
+    mtenc
+    musa
+    musa_mcc
+    muvid
     nvdec
     nvenc
     vaapi
@@ -2434,6 +2466,7 @@ HEADERS_LIST="
     linux_dma_buf_h
     linux_perf_event_h
     malloc_h
+    musa_h
     poll_h
     pthread_np_h
     sys_hwprobe_h
@@ -2681,6 +2714,8 @@ HAVE_LIST="
     xmllint
     zlib_gzip
     openvino2
+    va_profile_av1_profile2
+    va_profile_hevc_mono
 "
 
 # options emitted with CONFIG_ prefix but not available on the command line
@@ -2871,6 +2906,8 @@ CMDLINE_SET="
     optflags
     nvcc
     nvccflags
+    mcc
+    mccflags
     pkg_config
     pkg_config_flags
     progs_suffix
@@ -3335,11 +3372,15 @@ zmbv_encoder_select="deflate_wrapper"
 # hardware accelerators
 cuda_deps="ffnvcodec"
 cuvid_deps="ffnvcodec"
+ffmtcodec_deps_any="libdl LoadLibrary"
 d3d11va_deps="dxva_h ID3D11VideoDecoder ID3D11VideoContext"
 d3d12va_deps="dxva_h ID3D12Device ID3D12VideoDecoder"
 dxva2_deps="dxva2api_h DXVA2_ConfigPictureDecode ole32 user32"
 ffnvcodec_deps_any="libdl LoadLibrary"
 mediacodec_deps="android mediandk pthreads"
+mtdec_deps="ffmtcodec"
+musa_deps="ffmtcodec"
+muvid_deps="ffmtcodec"
 nvdec_deps="ffnvcodec"
 vaapi_x11_deps="xlib_x11"
 videotoolbox_hwaccel_deps="videotoolbox pthreads"
@@ -3357,6 +3398,8 @@ av1_dxva2_hwaccel_deps="dxva2 DXVA_PicParams_AV1"
 av1_dxva2_hwaccel_select="av1_decoder"
 av1_nvdec_hwaccel_deps="nvdec CUVIDAV1PICPARAMS"
 av1_nvdec_hwaccel_select="av1_decoder"
+av1_mtdec_hwaccel_deps="mtdec MUVIDAV1PICPARAMS"
+av1_mtdec_hwaccel_select="av1_decoder"
 av1_vaapi_hwaccel_deps="vaapi VADecPictureParameterBufferAV1_bit_depth_idx"
 av1_vaapi_hwaccel_select="av1_decoder"
 av1_vdpau_hwaccel_deps="vdpau VdpPictureInfoAV1"
@@ -3383,6 +3426,8 @@ h264_dxva2_hwaccel_deps="dxva2"
 h264_dxva2_hwaccel_select="h264_decoder"
 h264_nvdec_hwaccel_deps="nvdec"
 h264_nvdec_hwaccel_select="h264_decoder"
+h264_mtdec_hwaccel_deps="mtdec"
+h264_mtdec_hwaccel_select="h264_decoder"
 h264_vaapi_hwaccel_deps="vaapi"
 h264_vaapi_hwaccel_select="h264_decoder"
 h264_vdpau_hwaccel_deps="vdpau"
@@ -3401,6 +3446,8 @@ hevc_dxva2_hwaccel_deps="dxva2 DXVA_PicParams_HEVC"
 hevc_dxva2_hwaccel_select="hevc_decoder"
 hevc_nvdec_hwaccel_deps="nvdec"
 hevc_nvdec_hwaccel_select="hevc_decoder"
+hevc_mtdec_hwaccel_deps="mtdec"
+hevc_mtdec_hwaccel_select="hevc_decoder"
 hevc_vaapi_hwaccel_deps="vaapi VAPictureParameterBufferHEVC"
 hevc_vaapi_hwaccel_select="hevc_decoder"
 hevc_vdpau_hwaccel_deps="vdpau VdpPictureInfoHEVC"
@@ -3477,6 +3524,8 @@ vp9_dxva2_hwaccel_deps="dxva2 DXVA_PicParams_VP9"
 vp9_dxva2_hwaccel_select="vp9_decoder"
 vp9_nvdec_hwaccel_deps="nvdec"
 vp9_nvdec_hwaccel_select="vp9_decoder"
+vp9_mtdec_hwaccel_deps="mtdec"
+vp9_mtdec_hwaccel_select="vp9_decoder"
 vp9_vaapi_hwaccel_deps="vaapi VADecPictureParameterBufferVP9_bit_depth"
 vp9_vaapi_hwaccel_select="vp9_decoder"
 vp9_vdpau_hwaccel_deps="vdpau VdpPictureInfoVP9"
@@ -3511,22 +3560,30 @@ v4l2_m2m_deps="linux_videodev2_h sem_timedwait"
 
 bilateral_cuda_filter_deps="ffnvcodec"
 bilateral_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
+bilateral_musa_filter_deps="musa_mcc"
 chromakey_cuda_filter_deps="ffnvcodec"
 chromakey_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
+chromakey_musa_filter_deps="musa_mcc"
 colorspace_cuda_filter_deps="ffnvcodec"
 colorspace_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
+colorspace_musa_filter_deps="musa_mcc"
 hwupload_cuda_filter_deps="ffnvcodec"
+hwupload_musa_filter_deps="ffmtcodec"
 scale_npp_filter_deps="ffnvcodec libnpp"
 scale2ref_npp_filter_deps="ffnvcodec libnpp"
 scale_cuda_filter_deps="ffnvcodec"
 scale_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
+scale_musa_filter_deps="musa_mcc"
 thumbnail_cuda_filter_deps="ffnvcodec"
 thumbnail_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
+thumbnail_musa_filter_deps="musa_mcc"
 transpose_npp_filter_deps="ffnvcodec libnpp"
 overlay_cuda_filter_deps="ffnvcodec"
 overlay_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
+overlay_musa_filter_deps="musa_mcc"
 pad_cuda_filter_deps="ffnvcodec"
 pad_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
+pad_musa_filter_deps="musa_mcc"
 sharpen_npp_filter_deps="ffnvcodec libnpp"
 
 ddagrab_filter_deps="d3d11va IDXGIOutput1 DXGI_OUTDUPL_FRAME_INFO"
@@ -3540,6 +3597,8 @@ mestimate_d3d12_filter_deps="d3d12va ID3D12VideoMotionEstimator d3d12_motion_est
 amf_deps_any="libdl LoadLibrary"
 nvenc_deps="ffnvcodec"
 nvenc_deps_any="libdl LoadLibrary"
+mtenc_deps="ffmtcodec"
+mtenc_deps_any="libdl LoadLibrary"
 
 aac_mediacodec_decoder_deps="mediacodec"
 aac_mediacodec_decoder_select="aac_adtstoasc_bsf aac_parser"
@@ -3560,6 +3619,9 @@ av1_mediacodec_encoder_select="extract_extradata_bsf"
 av1_mf_encoder_deps="mediafoundation"
 av1_nvenc_encoder_deps="nvenc NV_ENC_PIC_PARAMS_AV1"
 av1_nvenc_encoder_select="atsc_a53"
+av1_muvid_decoder_deps="muvid MUVIDAV1PICPARAMS"
+av1_mtenc_encoder_deps="mtenc MT_ENC_PIC_PARAMS_AV1"
+av1_mtenc_encoder_select="atsc_a53"
 av1_qsv_decoder_select="qsvdec"
 av1_qsv_encoder_deps="libvpl"
 av1_qsv_encoder_select="qsvenc"
@@ -3582,6 +3644,10 @@ h264_mf_encoder_deps="mediafoundation"
 h264_mmal_decoder_deps="mmal"
 h264_nvenc_encoder_deps="nvenc"
 h264_nvenc_encoder_select="atsc_a53"
+h264_muvid_decoder_deps="muvid"
+h264_muvid_decoder_select="h264_mp4toannexb_bsf"
+h264_mtenc_encoder_deps="mtenc"
+h264_mtenc_encoder_select="atsc_a53"
 h264_oh_decoder_deps="ohcodec"
 h264_oh_decoder_select="h264_mp4toannexb_bsf"
 h264_oh_encoder_deps="ohcodec"
@@ -3608,6 +3674,10 @@ hevc_mediacodec_encoder_select="extract_extradata_bsf hevc_metadata"
 hevc_mf_encoder_deps="mediafoundation"
 hevc_nvenc_encoder_deps="nvenc"
 hevc_nvenc_encoder_select="atsc_a53"
+hevc_muvid_decoder_deps="muvid"
+hevc_muvid_decoder_select="hevc_mp4toannexb_bsf"
+hevc_mtenc_encoder_deps="mtenc"
+hevc_mtenc_encoder_select="atsc_a53"
 hevc_oh_decoder_deps="ohcodec"
 hevc_oh_decoder_select="hevc_mp4toannexb_bsf"
 hevc_oh_encoder_deps="ohcodec"
@@ -3663,6 +3733,7 @@ vp8_v4l2m2m_decoder_deps="v4l2_m2m vp8_v4l2_m2m"
 vp8_v4l2m2m_encoder_deps="v4l2_m2m vp8_v4l2_m2m"
 vp9_amf_decoder_deps="amf"
 vp9_cuvid_decoder_deps="cuvid"
+vp9_muvid_decoder_deps="muvid"
 vp9_mediacodec_decoder_deps="mediacodec"
 vp9_mediacodec_encoder_deps="mediacodec"
 vp9_qsv_decoder_select="qsvdec"
@@ -4097,6 +4168,7 @@ boxblur_opencl_filter_deps="opencl gpl"
 bs2b_filter_deps="libbs2b"
 bwdif_cuda_filter_deps="ffnvcodec"
 bwdif_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
+bwdif_musa_filter_deps="musa_mcc"
 bwdif_vulkan_filter_deps="vulkan spirv_compiler"
 chromaber_vulkan_filter_deps="vulkan spirv_library"
 color_vulkan_filter_deps="vulkan spirv_library"
@@ -4247,6 +4319,7 @@ xfade_opencl_filter_deps="opencl"
 xfade_vulkan_filter_deps="vulkan spirv_library"
 yadif_cuda_filter_deps="ffnvcodec"
 yadif_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
+yadif_musa_filter_deps="musa_mcc"
 yadif_videotoolbox_filter_deps="metal corevideo videotoolbox"
 hstack_vaapi_filter_deps="vaapi_1"
 vstack_vaapi_filter_deps="vaapi_1"
@@ -4300,7 +4373,7 @@ avfilter_deps="avutil"
 avfilter_suggest="libm stdatomic zlib spirv_library"
 avformat_deps="avcodec avutil"
 avformat_suggest="libm network zlib stdatomic"
-avutil_suggest="clock_gettime ffnvcodec gcrypt libm zlib libdrm libmfx opencl openssl user32 vaapi vulkan videotoolbox corefoundation corevideo coremedia bcrypt stdatomic"
+avutil_suggest="clock_gettime ffmtcodec ffnvcodec gcrypt libm zlib libdrm libmfx opencl openssl user32 vaapi vulkan videotoolbox corefoundation corevideo coremedia bcrypt stdatomic"
 swresample_deps="avutil"
 swresample_suggest="libm libsoxr stdatomic"
 swscale_deps="avutil"
@@ -4980,6 +5053,12 @@ fi
 
 set_default nvcc
 
+mcc_default="mcc"
+set_default mcc
+
+mccflags_default="-mtgpu --musa-device-only -O2 -I\$(SRC_PATH) -I\$(SRC_PATH)/libavfilter -I/usr/local/musa/include"
+set_default mccflags
+
 if enabled cuda_nvcc; then
     if $nvcc $nvccflags_default 2>&1 | grep -qi unsupported; then
         nvccflags_default="-gencode arch=compute_60,code=sm_60 -O2"
@@ -5062,6 +5141,7 @@ tmpfile TMPE   $EXESUF
 tmpfile TMPH   .h
 tmpfile TMPM   .m
 tmpfile TMPCU  .cu
+tmpfile TMPMU  .mu
 tmpfile TMPGLSL .comp.glsl
 tmpfile TMPO   .o
 tmpfile TMPS   .S
@@ -7121,6 +7201,12 @@ else
     check_nvcc cuda_llvm
 fi
 
+if ! disabled ffmtcodec; then
+    # musify: DirectStream MT headers are installed by the MUSA SDK/container package.
+    ffmt_hdr_list="ffmtcodec/mtEncodeAPI.h ffmtcodec/dynlink_musa.h ffmtcodec/dynlink_muviddec.h ffmtcodec/dynlink_mtmuvid.h"
+    check_pkg_config ffmtcodec "ffmtcodec >= 13.0.0" "$ffmt_hdr_list" ""
+fi
+
 if ! disabled ffnvcodec; then
     ffnv_hdr_list="ffnvcodec/nvEncodeAPI.h ffnvcodec/dynlink_cuda.h ffnvcodec/dynlink_cuviddec.h ffnvcodec/dynlink_nvcuvid.h"
     check_pkg_config ffnvcodec "ffnvcodec >= 12.1.14.0" "$ffnv_hdr_list" "" || \
@@ -7695,6 +7781,14 @@ if enabled vaapi; then
     check_type "va/va.h va/va_enc_vp8.h"  "VAEncPictureParameterBufferVP8"
     check_type "va/va.h va/va_enc_vp9.h"  "VAEncPictureParameterBufferVP9"
     check_type "va/va.h va/va_enc_av1.h"  "VAEncPictureParameterBufferAV1"
+
+    disable va_profile_av1_profile2 && enabled av1_vaapi_encoder &&
+        test_code cc va/va.h "VAProfile p = VAProfileAV1Profile2" &&
+        enable va_profile_av1_profile2
+
+    disable va_profile_hevc_mono && enabled hevc_vaapi_encoder &&
+        test_code cc va/va.h "VAProfile p = VAProfileHEVCMono" &&
+        enable va_profile_hevc_mono
 fi
 
 if enabled_all opencl libdrm ; then
@@ -7797,7 +7891,7 @@ if enabled x86; then
         freebsd|mingw32*|mingw64*|win32|win64|linux|cygwin*)
             ;;
         *)
-            disable ffnvcodec cuvid nvdec nvenc
+            disable ffmtcodec mtdec mtenc musa muvid ffnvcodec cuvid nvdec nvenc
             ;;
     esac
 elif enabled_any aarch64 ppc64 && ! enabled bigendian; then
@@ -7805,14 +7899,24 @@ elif enabled_any aarch64 ppc64 && ! enabled bigendian; then
         linux)
             ;;
         *)
-            disable ffnvcodec cuvid nvdec nvenc
+            disable ffmtcodec mtdec mtenc musa muvid ffnvcodec cuvid nvdec nvenc
             ;;
     esac
 else
-    disable ffnvcodec cuvid nvdec nvenc
+    disable ffmtcodec mtdec mtenc musa muvid ffnvcodec cuvid nvdec nvenc
 fi
 
+enabled ffmtcodec && enable musa
+enabled musa && { check_mcc musa_mcc || warn "Disabling MUSA device-code filters: mcc is not usable"; }
 enabled ffnvcodec && enable cuda
+
+enabled mtenc &&
+    test_cc -I$source_path <<EOF || disable mtenc
+#include <ffmtcodec/mtEncodeAPI.h>
+MT_ENCODE_API_FUNCTION_LIST flist;
+void f(void) { struct { const GUID guid; } s[] = { { MT_ENC_CODEC_H264_GUID } }; }
+int main(void) { return 0; }
+EOF
 
 enabled nvenc &&
     test_cc -I$source_path <<EOF || disable nvenc
@@ -7822,8 +7926,16 @@ void f(void) { struct { const GUID guid; } s[] = { { NV_ENC_CODEC_H264_GUID } };
 int main(void) { return 0; }
 EOF
 
+if enabled mtenc; then
+    check_type "ffmtcodec/mtEncodeAPI.h" "MT_ENC_PIC_PARAMS_AV1"
+fi
+
 if enabled nvenc; then
     check_type "ffnvcodec/nvEncodeAPI.h" "NV_ENC_PIC_PARAMS_AV1"
+fi
+
+if enabled_any mtdec muvid; then
+    check_type "ffmtcodec/dynlink_musa.h ffmtcodec/dynlink_muviddec.h" "MUVIDAV1PICPARAMS"
 fi
 
 if enabled_any nvdec cuvid; then
@@ -8578,6 +8690,8 @@ OBJCFLAGS=$OBJCFLAGS
 ASFLAGS=$ASFLAGS
 GLSLCFLAGS=$GLSLCFLAGS
 NVCCFLAGS=$nvccflags
+MCC=$mcc
+MCCFLAGS=$mccflags
 AS_C=$AS_C
 AS_O=$AS_O
 OBJCC_C=$OBJCC_C

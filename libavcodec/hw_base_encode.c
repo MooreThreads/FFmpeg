@@ -28,6 +28,15 @@
 #include "avcodec.h"
 #include "hw_base_encode.h"
 
+//+MT add: temporal layer hierarchy (temporal_id per position in group)
+static const int hierarchy_p[4][8] = {
+    {0, -1, -1, -1, -1, -1, -1, -1},
+    {0,  1, -1, -1, -1, -1, -1, -1},
+    {0,  2,  1,  2, -1, -1, -1, -1},
+    {0,  3,  2,  3,  1,  3,  2,  3}
+};
+//-MT add
+
 static int base_encode_pic_free(FFHWBaseEncodePicture *pic)
 {
     av_frame_free(&pic->input_image);
@@ -134,8 +143,13 @@ static void hw_base_encode_set_b_pictures(FFHWBaseEncodeContext *ctx,
             hw_base_encode_add_ref(pic, end,   1, 1, 0);
             hw_base_encode_add_ref(pic, prev,  0, 0, 1);
 
-            for (ref = end->refs[1][0]; ref; ref = ref->refs[1][0])
+            //+MT change: stop at P-picture reference
+            for (ref = end->refs[1][0]; end->type != FF_HW_PICTURE_TYPE_P && ref; ref = ref->refs[1][0]) {
                 hw_base_encode_add_ref(pic, ref, 0, 1, 0);
+                if (ref->type == FF_HW_PICTURE_TYPE_P)
+                    break;
+            }
+            //-MT change
         }
         *last = prev;
 
@@ -157,8 +171,13 @@ static void hw_base_encode_set_b_pictures(FFHWBaseEncodeContext *ctx,
         hw_base_encode_add_ref(pic, end,   1, 1, 0);
         hw_base_encode_add_ref(pic, prev,  0, 0, 1);
 
-        for (ref = end->refs[1][0]; ref; ref = ref->refs[1][0])
+        //+MT change: stop at P-picture reference
+        for (ref = end->refs[1][0]; end->type != FF_HW_PICTURE_TYPE_P && ref; ref = ref->refs[1][0]) {
             hw_base_encode_add_ref(pic, ref, 0, 1, 0);
+            if (ref->type == FF_HW_PICTURE_TYPE_P)
+                break;
+        }
+        //-MT change
 
         if (i > 1)
             hw_base_encode_set_b_pictures(ctx, start, pic, pic,
@@ -323,33 +342,110 @@ static int hw_base_encode_pick_next(AVCodecContext *avctx,
         av_assert0(start);
         ctx->gop_counter += 1 + b_counter;
     }
-    pic->is_reference = 1;
     *pic_out = pic;
 
-    hw_base_encode_add_ref(pic, pic, 0, 1, 0);
-    if (pic->type != FF_HW_PICTURE_TYPE_IDR) {
-        // TODO: apply both previous and forward multi reference for all vaapi encoders.
-        // And L0/L1 reference frame number can be set dynamically through query
-        // VAConfigAttribEncMaxRefFrames attribute.
-        if (avctx->codec_id == AV_CODEC_ID_AV1) {
-            for (i = 0; i < ctx->nb_next_prev; i++)
-                hw_base_encode_add_ref(pic, ctx->next_prev[i],
+    //+MT change: temporal layer support
+    if (ctx->nb_temporal_layers == 1) {
+        pic->is_reference = 1;
+        hw_base_encode_add_ref(pic, pic, 0, 1, 0);
+        if (pic->type != FF_HW_PICTURE_TYPE_IDR) {
+            // TODO: apply both previous and forward multi reference for all vaapi encoders.
+            // And L0/L1 reference frame number can be set dynamically through query
+            // VAConfigAttribEncMaxRefFrames attribute.
+            if (avctx->codec_id == AV_CODEC_ID_AV1) {
+                for (i = 0; i < ctx->nb_next_prev; i++)
+                    hw_base_encode_add_ref(pic, ctx->next_prev[i],
+                                           pic->type == FF_HW_PICTURE_TYPE_P,
+                                           b_counter > 0, 0);
+            } else {
+                hw_base_encode_add_ref(pic, start,
                                        pic->type == FF_HW_PICTURE_TYPE_P,
-                                       b_counter > 0, 0);
-        } else
-            hw_base_encode_add_ref(pic, start,
-                                   pic->type == FF_HW_PICTURE_TYPE_P,
-                                   b_counter > 0, 0);
+                                       b_counter > 0 || avctx->refs == 2, 0);
+                if (avctx->refs == 2 && pic->type == FF_HW_PICTURE_TYPE_P) {
+                    FFHWBaseEncodePicture **l0_list = pic->refs[0];
+                    if (l0_list[0]->nb_refs != 0 && l0_list[0]->refs[0][0] != NULL) {
+                        hw_base_encode_add_ref(pic, l0_list[0]->refs[0][0], 1, 1, 0);
+                    }
+                }
+            }
 
-        hw_base_encode_add_ref(pic, ctx->next_prev[ctx->nb_next_prev - 1], 0, 0, 1);
-    }
-
-    if (b_counter > 0) {
-        hw_base_encode_set_b_pictures(ctx, start, pic, pic, 1,
-                                      &prev);
+            hw_base_encode_add_ref(pic, ctx->next_prev[ctx->nb_next_prev - 1], 0, 0, 1);
+        }
     } else {
-        prev = pic;
+        int hierarchy_idx = ctx->nb_temporal_layers - 1;
+        int group_size = 1 << (ctx->nb_temporal_layers - 1);
+        int group_idx = (ctx->gop_counter - 1) % group_size;
+        pic->temporal_id = hierarchy_p[hierarchy_idx][group_idx];
+
+        if (pic->temporal_id == ctx->nb_temporal_layers - 1) {
+            hw_base_encode_add_ref(pic, ctx->next_prev[ctx->nb_next_prev - 1], 1, 1, 1);
+        } else if (pic->temporal_id < ctx->nb_temporal_layers - 1 &&
+                   pic->type == FF_HW_PICTURE_TYPE_P) {
+            hw_base_encode_add_ref(pic, pic, 0, 1, 0);
+            for (FFHWBaseEncodePicture *temp_ref = ctx->next_prev[ctx->nb_next_prev - 1];
+                 temp_ref; temp_ref = temp_ref->refs[0][0]) {
+                if (temp_ref->temporal_id <= pic->temporal_id) {
+                    hw_base_encode_add_ref(pic, temp_ref, 1, 1, 0);
+                    av_log(avctx, AV_LOG_DEBUG, "Ref pic:%"PRId64"/%d Current Pic:%"PRId64"/%d.\n",
+                           start->pts, start->temporal_id, pic->pts, pic->temporal_id);
+                    break;
+                }
+            }
+            hw_base_encode_add_ref(pic, ctx->next_prev[ctx->nb_next_prev - 1], 0, 0, 1);
+            pic->is_reference = 1;
+            if (pic->temporal_id == 0) {
+                if (ctx->base_layer)
+                    --ctx->base_layer->ref_count[0];
+                ctx->base_layer = pic;
+                ++ctx->base_layer->ref_count[0];
+            }
+        } else {
+            hw_base_encode_add_ref(pic, pic, 0, 1, 0);
+            pic->is_reference = 1;
+            if (ctx->base_layer)
+                --ctx->base_layer->ref_count[0];
+            ctx->base_layer = pic;
+            ++ctx->base_layer->ref_count[0];
+        }
     }
+
+    if (ctx->nb_temporal_layers == 1) {
+        if (b_counter > 0) {
+            hw_base_encode_set_b_pictures(ctx, start, pic, pic, 1, &prev);
+            if (avctx->refs == 2 && ctx->max_b_depth > 1) {
+                FFHWBaseEncodePicture *b_pic;
+                if (avctx->codec_id == AV_CODEC_ID_H264) {
+                    uint32_t len = 0, i = 1;
+                    for (b_pic = start->next; b_pic != pic; b_pic = b_pic->next) ++len;
+                    for (b_pic = start->next; 2 * i < len; b_pic = b_pic->next, i++);
+                    for (b_pic = b_pic->next; b_pic != pic; b_pic = b_pic->next) {
+                        if (b_pic->is_reference)
+                            hw_base_encode_add_ref(b_pic, start, 0, 1, 0);
+                    }
+                } else if (avctx->codec_id == AV_CODEC_ID_HEVC) {
+                    for (b_pic = start->next; b_pic != pic; b_pic = b_pic->next) {
+                        uint32_t i = 0;
+                        for (; i < b_pic->nb_dpb_pics; i++) {
+                            if (b_pic->dpb[i] == start)
+                                break;
+                        }
+                        if (i == b_pic->nb_dpb_pics) {
+                            hw_base_encode_add_ref(b_pic, start, 0, 1, 0);
+                            av_log(avctx, AV_LOG_DEBUG,
+                                   "Push second pic %" PRId64
+                                   " into"
+                                   " pic %" PRId64 " dpb as P ref.\n",
+                                   start->display_order, b_pic->display_order);
+                        }
+                    }
+                }
+            }
+        } else
+            prev = pic;
+    } else if (pic->is_reference)
+        prev = pic;
+    //-MT change
+
     hw_base_encode_add_next_prev(ctx, prev);
 
     return 0;
@@ -362,10 +458,16 @@ static int hw_base_encode_clear_old(AVCodecContext *avctx, FFHWBaseEncodeContext
     av_assert0(ctx->pic_start);
 
     // Remove direct references once each picture is complete.
+    //+MT change: temporal layer handling
     for (pic = ctx->pic_start; pic; pic = pic->next) {
-        if (pic->encode_complete && pic->next)
-            hw_base_encode_remove_refs(pic, 0);
+        if (pic->encode_complete) {
+            if (ctx->nb_temporal_layers > 1)
+                hw_base_encode_remove_refs(pic, 0);
+            else if (pic->next)
+                hw_base_encode_remove_refs(pic, 0);
+        }
     }
+    //-MT change
 
     // Remove indirect references once a picture has no direct references.
     for (pic = ctx->pic_start; pic; pic = pic->next) {
@@ -383,6 +485,16 @@ static int hw_base_encode_clear_old(AVCodecContext *avctx, FFHWBaseEncodeContext
                 prev->next = next;
             else
                 ctx->pic_start = next;
+
+            //+MT change: keep pic_end valid with temporal layers
+            if (ctx->nb_temporal_layers > 1) {
+                if (pic == ctx->pic_end && prev)
+                    ctx->pic_end = prev;
+                else
+                    ctx->pic_end = ctx->pic_start;
+            }
+            //-MT change
+
             ctx->op->free(avctx, pic);
             base_encode_pic_free(pic);
         } else {
@@ -716,6 +828,13 @@ int ff_hw_base_init_gop_structure(FFHWBaseEncodeContext *ctx, AVCodecContext *av
         ctx->closed_gop  = 1;
         ctx->gop_per_idr = 1;
     }
+
+    //+MT add: keep intra period a multiple of gop size for better
+    //quality in h265 (h264 does not need this)
+    if (avctx->codec_id == AV_CODEC_ID_H265 && ctx->gop_size % (ctx->b_per_p + 1) != 0) {
+        ctx->gop_size = ctx->gop_size + (ctx->gop_size % (ctx->b_per_p + 1));
+    }
+    //-MT add
 
     return 0;
 }

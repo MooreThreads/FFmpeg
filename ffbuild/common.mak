@@ -128,6 +128,8 @@ $(BIN2CEXE): ffbuild/bin2c_host.o
 RUN_BIN2C = $(BIN2C) $(patsubst $(SRC_PATH)/%,$(SRC_LINK)/%,$<) $@ $(subst .,_,$(basename $(notdir $@)))
 RUN_GZIP  = $(M)gzip -nc9 $(patsubst $(SRC_PATH)/%,$(SRC_LINK)/%,$<) >$@
 RUN_MINIFY = $(M)sed 's!/\\*.*\\*/!!g' $< | tr '\n' ' ' | tr -s ' ' | sed 's/^ //; s/ $$//' > $@
+MCC       ?= mcc
+MCCFLAGS ?= -mtgpu --musa-device-only -O2 -I$(SRC_PATH) -I$(SRC_PATH)/libavfilter -I/usr/local/musa/include
 %.gz: TAG = GZIP
 %.min: TAG = MINIFY
 
@@ -156,6 +158,11 @@ endif
 
 %.ptx: %.cu $(SRC_PATH)/compat/cuda/cuda_runtime.h
 	$(COMPILE_NVCC)
+
+%.mu.c: %.mu $(BIN2CEXE)
+	$(Q)$(MCC) $(MCCFLAGS) -o $@.tmp $(patsubst $(SRC_PATH)/%,$(SRC_LINK)/%,$<)
+	$(Q)$(BIN2C) $@.tmp $@ $(subst .,_,$(basename $(notdir $@)))
+	$(RM) $@.tmp
 
 ifdef CONFIG_SHADER_COMPRESSION
 %.ptx.gz: %.ptx
@@ -266,7 +273,7 @@ $(TOOLOBJS): | tools
 
 OUTDIRS := $(OUTDIRS) $(dir $(OBJS) $(HOBJS) $(HOSTOBJS) $(SHLIBOBJS) $(STLIBOBJS) $(TESTOBJS))
 
-CLEANSUFFIXES     = *.d *.gcda *.gcno *.h.c *.ho *.map *.o *.objs *.pc *.ptx *.ptx.gz *.ptx.c *.spv *.spv.gz *.spv.c *.ver *.version *.html.gz *.html.c *.css.min.gz *.css.min *.css.c  *$(DEFAULT_X86ASMD).asm *~ *.ilk *.pdb
+CLEANSUFFIXES     = *.d *.gcda *.gcno *.h.c *.ho *.map *.o *.objs *.pc *.ptx *.ptx.gz *.ptx.c *.spv *.spv.gz *.spv.c *.mu.c *.mu.c.tmp *.ver *.version *.html.gz *.html.c *.css.min.gz *.css.min *.css.c  *$(DEFAULT_X86ASMD).asm *~ *.ilk *.pdb
 LIBSUFFIXES       = *.a *.lib *.so *.so.* *.dylib *.dll *.def *.dll.a
 
 define RULES

@@ -330,10 +330,9 @@ static int vaapi_encode_h265_init_sequence_params(AVCodecContext *avctx)
 
         pps->transform_skip_enabled_flag =
             !!features.bits.transform_skip;
-        // set diff_cu_qp_delta_depth as its max value if cu_qp_delta enabled. Otherwise
-        // 0 will make cu_qp_delta invalid.
-        if (pps->cu_qp_delta_enabled_flag)
-            pps->diff_cu_qp_delta_depth = sps->log2_diff_max_min_luma_coding_block_size;
+        // Keep diff_cu_qp_delta_depth from hw_base_encode_h265.  The
+        // MT wave6 encoder accepts only 0 or 1 here; using the full CU
+        // depth advertised by VAAPI makes the first frame fail in the driver.
     }
 #endif
 
@@ -805,13 +804,16 @@ static int vaapi_encode_h265_init_slice_params(AVCodecContext *avctx,
             sh->collocated_ref_idx      = 0;
         }
 
-        sh->num_ref_idx_active_override_flag = 0;
+        sh->num_ref_idx_active_override_flag = 1;
         sh->num_ref_idx_l0_active_minus1 = pps->num_ref_idx_l0_default_active_minus1;
+        if (pic->nb_refs[0] == 2 && pic->type == FF_HW_PICTURE_TYPE_P) {
+            sh->num_ref_idx_l0_active_minus1 = 1;
+        }
         sh->num_ref_idx_l1_active_minus1 = pps->num_ref_idx_l1_default_active_minus1;
     }
 
-    sh->slice_sao_luma_flag = sh->slice_sao_chroma_flag =
-        sps->sample_adaptive_offset_enabled_flag;
+    sh->slice_sao_luma_flag = sps->sample_adaptive_offset_enabled_flag;
+    sh->slice_sao_chroma_flag = sps->sample_adaptive_offset_enabled_flag && (sps->chroma_format_idc != 0);
 
     if (pic->type == FF_HW_PICTURE_TYPE_B)
         sh->slice_qp_delta = priv->fixed_qp_b - (pps->init_qp_minus26 + 26);
@@ -820,6 +822,8 @@ static int vaapi_encode_h265_init_slice_params(AVCodecContext *avctx,
     else
         sh->slice_qp_delta = priv->unit_opts.fixed_qp_idr - (pps->init_qp_minus26 + 26);
 
+    sh->five_minus_max_num_merge_cand = 3;
+    sh->slice_loop_filter_across_slices_enabled_flag = 1;
 
     *vslice = (VAEncSliceParameterBufferHEVC) {
         .slice_segment_address = sh->slice_segment_address,
@@ -878,6 +882,8 @@ static int vaapi_encode_h265_init_slice_params(AVCodecContext *avctx,
         if (base_ctx->p_to_gpb && pic->type == FF_HW_PICTURE_TYPE_P)
             // Reference for GPB B-frame, L0 == L1
             vslice->ref_pic_list1[0] = vpic->reference_frames[0];
+        if (pic->type == FF_HW_PICTURE_TYPE_P && pic->nb_refs[0] == 2)
+            vslice->ref_pic_list0[1] = vpic->reference_frames[1];
     }
     if (pic->nb_refs[1]) {
         // Forward reference for B-frame.
@@ -1008,6 +1014,7 @@ static av_cold int vaapi_encode_h265_configure(AVCodecContext *avctx)
 
 static const VAAPIEncodeProfile vaapi_encode_h265_profiles[] = {
     { AV_PROFILE_HEVC_MAIN,     8, 3, 1, 1, VAProfileHEVCMain       },
+    { AV_PROFILE_HEVC_MAIN,     8, 4, 0, 0, VAProfileHEVCMain       },
     { AV_PROFILE_HEVC_REXT,     8, 3, 1, 1, VAProfileHEVCMain       },
 #if VA_CHECK_VERSION(0, 37, 0)
     { AV_PROFILE_HEVC_MAIN_10, 10, 3, 1, 1, VAProfileHEVCMain10     },
@@ -1019,8 +1026,12 @@ static const VAAPIEncodeProfile vaapi_encode_h265_profiles[] = {
     { AV_PROFILE_HEVC_REXT,    10, 3, 1, 0, VAProfileHEVCMain422_10 },
     { AV_PROFILE_HEVC_REXT,    12, 3, 1, 0, VAProfileHEVCMain422_12 },
     { AV_PROFILE_HEVC_REXT,     8, 3, 0, 0, VAProfileHEVCMain444 },
+    { AV_PROFILE_HEVC_REXT,     8, 4, 0, 0, VAProfileHEVCMain444 },
     { AV_PROFILE_HEVC_REXT,    10, 3, 0, 0, VAProfileHEVCMain444_10 },
     { AV_PROFILE_HEVC_REXT,    12, 3, 0, 0, VAProfileHEVCMain444_12 },
+#endif
+#if HAVE_VA_PROFILE_HEVC_MONO
+    { AV_PROFILE_HEVC_REXT,     8, 1, 0, 0, VAProfileHEVCMono       },
 #endif
     { AV_PROFILE_UNKNOWN }
 };
