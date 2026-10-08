@@ -1221,6 +1221,8 @@ static int decode_seq_header(AVSContext *h)
     if (ret < 0)
         return ret;
 
+    h->got_pix_fmt = 1;
+
     h->width  = width;
     h->height = height;
     h->mb_width  = (h->width  + 15) >> 4;
@@ -1275,12 +1277,16 @@ static int cavs_decode_frame(AVCodecContext *avctx, AVFrame *rframe,
             decode_seq_header(h);
             break;
         case PIC_I_START_CODE:
-            if (!h->got_keyframe) {
+        case PIC_PB_START_CODE:
+            if (!h->got_pix_fmt) {
+                av_log(avctx, AV_LOG_ERROR, "No sequence header before picture header !!!\n");
+                return AVERROR_INVALIDDATA;
+            }
+            if (stc == PIC_I_START_CODE && !h->got_keyframe) {
                 av_frame_unref(h->DPB[0].f);
                 av_frame_unref(h->DPB[1].f);
                 h->got_keyframe = 1;
             }
-        case PIC_PB_START_CODE:
             if (frame_start > 1)
                 return AVERROR_INVALIDDATA;
             frame_start ++;

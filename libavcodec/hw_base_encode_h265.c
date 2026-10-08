@@ -44,7 +44,9 @@ int ff_hw_base_encode_init_params_h265(FFHWBaseEncodeContext *base_ctx,
 
     desc = av_pix_fmt_desc_get(base_ctx->input_frames->sw_format);
     av_assert0(desc);
-    if (desc->nb_components == 1) {
+    if (desc->nb_components == 4) {
+        chroma_format = 1;
+    } else if (desc->nb_components == 1) {
         chroma_format = 0;
     } else {
         if (desc->log2_chroma_w == 1 && desc->log2_chroma_h == 1) {
@@ -113,12 +115,15 @@ int ff_hw_base_encode_init_params_h265(FFHWBaseEncodeContext *base_ctx,
     if (avctx->level != AV_LEVEL_UNKNOWN) {
         ptl->general_level_idc = avctx->level;
     } else {
+        uint32_t max_dec_pic_buffering = base_ctx->max_b_depth + 2;
+        if (avctx->refs == 2)
+            max_dec_pic_buffering += 1;
         const H265LevelDescriptor *level;
 
         level = ff_h265_guess_level(ptl, avctx->bit_rate,
                                     base_ctx->surface_width, base_ctx->surface_height,
                                     opts->nb_slices, opts->tile_rows, opts->tile_cols,
-                                    (base_ctx->b_per_p > 0) + 1);
+                                    max_dec_pic_buffering);
         if (level) {
             av_log(avctx, AV_LOG_VERBOSE, "Using level %s.\n", level->name);
             ptl->general_level_idc = level->level_idc;
@@ -133,6 +138,8 @@ int ff_hw_base_encode_init_params_h265(FFHWBaseEncodeContext *base_ctx,
 
     vps->vps_sub_layer_ordering_info_present_flag = 0;
     vps->vps_max_dec_pic_buffering_minus1[0]      = base_ctx->max_b_depth + 1;
+    if (avctx->refs == 2)
+        vps->vps_max_dec_pic_buffering_minus1[0] += 1;
     vps->vps_max_num_reorder_pics[0]              = base_ctx->max_b_depth;
     vps->vps_max_latency_increase_plus1[0]        = 0;
 
@@ -177,6 +184,8 @@ int ff_hw_base_encode_init_params_h265(FFHWBaseEncodeContext *base_ctx,
     sps->pic_width_in_luma_samples  = base_ctx->surface_width;
     sps->pic_height_in_luma_samples = base_ctx->surface_height;
 
+    sps->strong_intra_smoothing_enabled_flag = 1;
+
     if (avctx->width  != base_ctx->surface_width ||
         avctx->height != base_ctx->surface_height) {
         sps->conformance_window_flag = 1;
@@ -186,6 +195,11 @@ int ff_hw_base_encode_init_params_h265(FFHWBaseEncodeContext *base_ctx,
         sps->conf_win_top_offset    = 0;
         sps->conf_win_bottom_offset =
             (base_ctx->surface_height - avctx->height) >> desc->log2_chroma_h;
+        if (desc->nb_components == 4) {
+            //RGBA default encoding to yuv420.
+            sps->conf_win_right_offset  >>= 1;
+            sps->conf_win_bottom_offset >>= 1;
+        }
     } else {
         sps->conformance_window_flag = 0;
     }
@@ -193,7 +207,7 @@ int ff_hw_base_encode_init_params_h265(FFHWBaseEncodeContext *base_ctx,
     sps->bit_depth_luma_minus8   = bit_depth - 8;
     sps->bit_depth_chroma_minus8 = bit_depth - 8;
 
-    sps->log2_max_pic_order_cnt_lsb_minus4 = 8;
+    sps->log2_max_pic_order_cnt_lsb_minus4 = 10;
 
     sps->sps_sub_layer_ordering_info_present_flag =
         vps->vps_sub_layer_ordering_info_present_flag;
@@ -306,10 +320,17 @@ int ff_hw_base_encode_init_params_h265(FFHWBaseEncodeContext *base_ctx,
     pps->num_ref_idx_l0_default_active_minus1 = 0;
     pps->num_ref_idx_l1_default_active_minus1 = 0;
 
+    pps->lists_modification_present_flag = 1;
+
     pps->init_qp_minus26 = opts->fixed_qp_idr - 26;
 
     pps->cu_qp_delta_enabled_flag = opts->cu_qp_delta_enabled_flag;
-    pps->diff_cu_qp_delta_depth   = 0;
+    if (pps->cu_qp_delta_enabled_flag)
+        pps->diff_cu_qp_delta_depth = 1;
+    else
+        pps->diff_cu_qp_delta_depth = 0;
+
+    pps->transform_skip_enabled_flag = 1;
 
     if (opts->tile_rows && opts->tile_cols) {
         int uniform_spacing;

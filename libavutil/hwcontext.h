@@ -41,6 +41,11 @@ enum AVHWDeviceType {
     AV_HWDEVICE_TYPE_AMF,
     /* OpenHarmony Codec device */
     AV_HWDEVICE_TYPE_OHCODEC,
+    /* musify: MUSA MT video device backend (parallel to AV_HWDEVICE_TYPE_CUDA).
+       Net-additive — existing enum values unchanged. Required to expose the
+       MUSA hwdevice backend registered by libavutil/hwcontext_musa.c.
+       See MUSIFY.md `## Knowledge Base` [Round 1]. */
+    AV_HWDEVICE_TYPE_MUSA,
 };
 
 /**

@@ -151,6 +151,9 @@ static const VAAPIFormatDescriptor vaapi_format_map[] = {
 #ifdef VA_FOURCC_XYUV
     MAP(XYUV, YUV444,  VUYX,    0),
 #endif
+#ifdef VA_FOURCC_AYUV
+    MAP(AYUV, YUV444,  AYUV,    0),
+#endif
     MAP(Y800, YUV400,  GRAY8,   0),
 #ifdef VA_FOURCC_P010
     MAP(P010, YUV420_10BPP, P010, 0),
@@ -171,15 +174,27 @@ static const VAAPIFormatDescriptor vaapi_format_map[] = {
 #ifdef VA_FOURCC_X2R10G10B10
     MAP(X2R10G10B10, RGB32_10, X2RGB10, 0),
 #endif
+#ifdef VA_FOURCC_X2B10G10R10
+    MAP(X2B10G10R10, RGB32_10, X2BGR10, 0),
+#endif
 #ifdef VA_FOURCC_Y410
     // libva doesn't include a fourcc for XV30 and the driver only declares
     // support for Y410, so we must fudge the mapping here.
     MAP(Y410, YUV444_10,  XV30, 0),
 #endif
+#ifdef VA_FOURCC_Q410
+    MAP(Q410, YUV444_10,  YUV444P10LE, 0),
+#endif
 #ifdef VA_FOURCC_Y412
     // libva doesn't include a fourcc for XV36 and the driver only declares
     // support for Y412, so we must fudge the mapping here.
     MAP(Y412, YUV444_12,  XV36, 0),
+#endif
+#ifdef VA_FOURCC_R8G8B8
+    MAP(R8G8B8, RGB32,  RGB24, 0),
+#endif
+#ifdef VA_FOURCC_B8G8R8
+    MAP(B8G8R8, RGB32,  BGR24, 0),
 #endif
 };
 #undef MAP

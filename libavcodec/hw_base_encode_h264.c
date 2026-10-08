@@ -32,18 +32,37 @@ int ff_hw_base_encode_init_params_h264(FFHWBaseEncodeContext *base_ctx,
     H264RawPPS *pps = &common->raw_pps;
     const AVPixFmtDescriptor *desc;
     int bit_depth;
+    //+MT add
+    int chroma_idc;
+    //-MT add
 
     memset(sps, 0, sizeof(*sps));
     memset(pps, 0, sizeof(*pps));
 
     desc = av_pix_fmt_desc_get(base_ctx->input_frames->sw_format);
     av_assert0(desc);
-    if (desc->nb_components == 1 || desc->log2_chroma_w != 1 || desc->log2_chroma_h != 1) {
+    //+MT change: support RGBA/400/422/444 chroma formats
+    bit_depth = desc->comp[0].depth;
+
+    chroma_idc = -1;
+    if (desc->nb_components == 4) { //RGBA
+        chroma_idc = 1;
+    } else if (desc->nb_components == 1) {
+        chroma_idc = 0;
+    } else if (desc->nb_components == 3) {
+        if (desc->log2_chroma_w == 1 && desc->log2_chroma_h == 1)
+            chroma_idc = 1;
+        else if (desc->log2_chroma_w == 1 && desc->log2_chroma_h == 0)
+            chroma_idc = 2;
+        else if (desc->log2_chroma_w == 0 && desc->log2_chroma_h == 0)
+            chroma_idc = 3;
+    }
+    if (chroma_idc < 0) {
         av_log(avctx, AV_LOG_ERROR, "Chroma format of input pixel format "
                 "%s is not supported.\n", desc->name);
         return AVERROR(EINVAL);
     }
-    bit_depth = desc->comp[0].depth;
+    //-MT change
 
     sps->nal_unit_header.nal_ref_idc   = 3;
     sps->nal_unit_header.nal_unit_type = H264_NAL_SPS;
@@ -65,6 +84,10 @@ int ff_hw_base_encode_init_params_h264(FFHWBaseEncodeContext *base_ctx,
 
     if (base_ctx->gop_size == 1)
         common->dpb_frames = 0;
+    //+MT change: two references need one more dpb frame
+    else if (avctx->refs == 2)
+        common->dpb_frames = 2 + base_ctx->max_b_depth;
+    //-MT change
     else
         common->dpb_frames = 1 + base_ctx->max_b_depth;
 
@@ -98,17 +121,24 @@ int ff_hw_base_encode_init_params_h264(FFHWBaseEncodeContext *base_ctx,
     }
 
     sps->seq_parameter_set_id = 0;
-    sps->chroma_format_idc    = 1;
+    sps->chroma_format_idc    = chroma_idc;
     sps->bit_depth_luma_minus8 = bit_depth - 8;
     sps->bit_depth_chroma_minus8 = bit_depth - 8;
 
-    sps->log2_max_frame_num_minus4 = 4;
-    sps->pic_order_cnt_type        = base_ctx->max_b_depth ? 0 : 2;
-    if (sps->pic_order_cnt_type == 0) {
-        sps->log2_max_pic_order_cnt_lsb_minus4 = 4;
-    }
+    //+MT change: larger frame_num / poc windows, always poc type 0
+    sps->log2_max_frame_num_minus4 = 10;
+    sps->pic_order_cnt_type        = 0;
+    sps->log2_max_pic_order_cnt_lsb_minus4 = 10;
+    //-MT change
 
     sps->max_num_ref_frames = common->dpb_frames;
+
+    //+MT add: temporal layers need more reference frames
+    if (base_ctx->nb_temporal_layers > 2)
+        sps->max_num_ref_frames += (base_ctx->nb_temporal_layers - 1);
+    if (base_ctx->nb_temporal_layers > 1)
+        sps->gaps_in_frame_num_allowed_flag = 1;
+    //-MT add
 
     sps->pic_width_in_mbs_minus1        = opts->mb_width  - 1;
     sps->pic_height_in_map_units_minus1 = opts->mb_height - 1;
@@ -121,11 +151,21 @@ int ff_hw_base_encode_init_params_h264(FFHWBaseEncodeContext *base_ctx,
         sps->frame_cropping_flag = 1;
 
         sps->frame_crop_left_offset   = 0;
-        sps->frame_crop_right_offset  =
-            (16 * opts->mb_width - avctx->width) / 2;
         sps->frame_crop_top_offset    = 0;
-        sps->frame_crop_bottom_offset =
-            (16 * opts->mb_height - avctx->height) / 2;
+        //+MT change: crop unit depends on chroma format
+        if (desc->nb_components == 4) {
+            //RGBA default encoding to yuv420.
+            sps->frame_crop_right_offset  =
+                (16 * opts->mb_width - avctx->width) >> 1;
+            sps->frame_crop_bottom_offset =
+                (16 * opts->mb_height - avctx->height) >> 1;
+        } else {
+            sps->frame_crop_right_offset  =
+                (16 * opts->mb_width - avctx->width) >> desc->log2_chroma_w;
+            sps->frame_crop_bottom_offset =
+                (16 * opts->mb_height - avctx->height) >> desc->log2_chroma_h;
+        }
+        //-MT change
     } else {
         sps->frame_cropping_flag = 0;
     }
@@ -233,6 +273,15 @@ int ff_hw_base_encode_init_params_h264(FFHWBaseEncodeContext *base_ctx,
     sps->vui.max_num_reorder_frames        = base_ctx->max_b_depth;
     sps->vui.max_dec_frame_buffering       = base_ctx->max_b_depth + 1;
 
+    //+MT add
+    if (avctx->refs == 2)
+        sps->vui.max_dec_frame_buffering += 1;
+
+    if (base_ctx->nb_temporal_layers > 1)
+        sps->vui.max_dec_frame_buffering +=
+            av_clip(base_ctx->nb_temporal_layers - 1, 0, 3);
+    //-MT add
+
     pps->nal_unit_header.nal_ref_idc = 3;
     pps->nal_unit_header.nal_unit_type = H264_NAL_PPS;
 
@@ -246,7 +295,12 @@ int ff_hw_base_encode_init_params_h264(FFHWBaseEncodeContext *base_ctx,
     if (!opts->cabac && pps->entropy_coding_mode_flag)
         pps->entropy_coding_mode_flag = 0;
 
-    pps->num_ref_idx_l0_default_active_minus1 = 0;
+    //+MT change
+    if (avctx->refs == 2)
+        pps->num_ref_idx_l0_default_active_minus1 = 1;
+    else
+        pps->num_ref_idx_l0_default_active_minus1 = 0;
+    //-MT change
     pps->num_ref_idx_l1_default_active_minus1 = 0;
 
     pps->pic_init_qp_minus26 = opts->fixed_qp_idr - 26;

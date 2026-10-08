@@ -715,7 +715,15 @@ static int mpeg_decode_mb(Mpeg12SliceContext *const s, int *mb_skip_run)
         }
 
         s->c.mb_intra = 0;
-        s->last_dc[0] = s->last_dc[1] = s->last_dc[2] = 128 << s->c.intra_dc_precision;
+        if (s->c.avctx->idct_algo == FF_IDCT_CNM_MP2) {
+            s->last_dc[0] =
+            s->last_dc[1] =
+            s->last_dc[2] = 0;
+        } else {
+            s->last_dc[0] =
+            s->last_dc[1] =
+            s->last_dc[2] = 128 << s->c.intra_dc_precision;
+        }
         if (HAS_CBP(mb_type)) {
             s->c.bdsp.clear_blocks(s->block[0]);
 
@@ -786,6 +794,18 @@ static av_cold int mpeg_decode_init(AVCodecContext *avctx)
     s2->chroma_format  = CHROMA_420;
     avctx->color_range             = AVCOL_RANGE_MPEG;
     return 0;
+}
+
+static void quant_matrix_rebuild(uint16_t *matrix, const uint8_t *old_perm,
+                                 const uint8_t *new_perm)
+{
+    uint16_t temp_matrix[64];
+    int i;
+
+    memcpy(temp_matrix, matrix, 64 * sizeof(uint16_t));
+
+    for (i = 0; i < 64; i++)
+        matrix[new_perm[i]] = temp_matrix[old_perm[i]];
 }
 
 static const enum AVPixelFormat mpeg1_hwaccel_pixfmt_list_420[] = {
@@ -863,6 +883,7 @@ static int mpeg_decode_postinit(AVCodecContext *avctx)
 {
     Mpeg1Context *s1  = avctx->priv_data;
     MPVContext *const s = &s1->slice.c;
+    uint8_t old_permutation[64];
     int ret;
 
     if (avctx->codec_id == AV_CODEC_ID_MPEG1VIDEO) {
@@ -965,11 +986,23 @@ static int mpeg_decode_postinit(AVCodecContext *avctx)
 
         avctx->pix_fmt = mpeg_get_pixelformat(avctx);
 
+        avctx->idct_algo = FF_IDCT_CNM_MP2;
+
+        /* Quantization matrices may need reordering
+         * if DCT permutation is changed. */
+        memcpy(old_permutation, s->idsp.idct_permutation, 64 * sizeof(uint8_t));
+
+        ff_mpv_idct_init(s);
         if ((ret = ff_mpv_common_init(s)) < 0)
             return ret;
         if (!s->avctx->lowres)
             for (int i = 0; i < s->slice_context_count; i++)
                 ff_mpv_framesize_disable(&s->thread_context[i]->sc);
+
+        quant_matrix_rebuild(s->intra_matrix,        old_permutation, s->idsp.idct_permutation);
+        quant_matrix_rebuild(s->inter_matrix,        old_permutation, s->idsp.idct_permutation);
+        quant_matrix_rebuild(s->chroma_intra_matrix, old_permutation, s->idsp.idct_permutation);
+        quant_matrix_rebuild(s->chroma_inter_matrix, old_permutation, s->idsp.idct_permutation);
     }
     return 0;
 }
@@ -1455,7 +1488,7 @@ static int mpeg_decode_slice(Mpeg12SliceContext *const s, int mb_y,
         }
     }
 
-    s->last_dc[0] = 128 << s->c.intra_dc_precision;
+    s->last_dc[0] = 0;
     s->last_dc[1] = s->last_dc[0];
     s->last_dc[2] = s->last_dc[0];
     memset(s->c.last_mv, 0, sizeof(s->c.last_mv));
@@ -1602,7 +1635,15 @@ static int mpeg_decode_slice(Mpeg12SliceContext *const s, int mb_y,
                 s->c.mb_intra = 0;
                 for (i = 0; i < 12; i++)
                     s->c.block_last_index[i] = -1;
-                s->last_dc[0] = s->last_dc[1] = s->last_dc[2] = 128 << s->c.intra_dc_precision;
+                if (s->c.avctx->idct_algo == FF_IDCT_CNM_MP2) {
+                    s->last_dc[0] =
+                    s->last_dc[1] =
+                    s->last_dc[2] = 0;
+                } else {
+                    s->last_dc[0] =
+                    s->last_dc[1] =
+                    s->last_dc[2] = 128 << s->c.intra_dc_precision;
+                }
                 if (s->c.picture_structure == PICT_FRAME)
                     s->c.mv_type = MV_TYPE_16X16;
                 else

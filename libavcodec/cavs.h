@@ -244,6 +244,7 @@ typedef struct AVSContext {
     uint8_t *edge_emu_buffer;
 
     int got_keyframe;
+    int got_pix_fmt;
     int16_t *block;
 } AVSContext;
 

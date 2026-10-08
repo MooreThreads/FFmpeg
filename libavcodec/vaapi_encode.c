@@ -265,6 +265,68 @@ static int vaapi_encode_make_tile_slice(AVCodecContext *avctx,
     return 0;
 }
 
+//+MT add: dynamic bitrate update for CBR/VBR
+static int ff_vaapi_encode_update_br(AVCodecContext *avctx, FFHWBaseEncodePicture *base_pic)
+{
+    VAAPIEncodeContext *ctx = avctx->priv_data;
+    int64_t rc_bits_per_second;
+    int     rc_target_percentage;
+    int update_flag = 0;
+    int err = 0;
+
+    /* bitrate update logic just used for cbr or vbr */
+    if (((ctx->va_rc_mode == VA_RC_CBR) && (avctx->bit_rate != ctx->va_bit_rate))
+        || ((ctx->va_rc_mode == VA_RC_VBR) && (avctx->bit_rate * 100 != ctx->va_bit_rate * ctx->rc_params.target_percentage)))
+    {
+        if (ctx->va_rc_mode == VA_RC_CBR) {
+            rc_bits_per_second = avctx->bit_rate;
+            rc_target_percentage = 100;
+            update_flag = 1;
+        } else if (ctx->va_rc_mode == VA_RC_VBR) {
+            /* VBR, refer to vaapi_encode_init_rate_control() */
+            if (avctx->rc_max_rate) {
+                rc_bits_per_second   = avctx->rc_max_rate;
+                rc_target_percentage = (avctx->bit_rate * 100) / avctx->rc_max_rate;
+            } else {
+                rc_bits_per_second   = 2 * avctx->bit_rate;
+                rc_target_percentage = 50;
+            }
+            update_flag = 1;
+        }
+
+        if (update_flag) {
+            av_log(avctx, AV_LOG_WARNING, "update br: %d -> %"PRId64", cur_rc_mode=%d, pic_type=%d\n",
+                   ctx->rc_params.bits_per_second, rc_bits_per_second, ctx->va_rc_mode, base_pic->type);
+            ctx->rc_params.bits_per_second = rc_bits_per_second;
+            ctx->rc_params.target_percentage = rc_target_percentage;
+
+            /* Do not configure MiscRateControl buffer again when idr, which has been existed in global_params,
+             * and will send two MiscRateControl buffers to video driver by vaRenderPicture.
+             * Hence we just need modify RateControl data in global_params and send one.
+             * But for none-idr, need make a new misc param, because global_params not be pass to video driver.
+             **/
+            if (base_pic->type == FF_HW_PICTURE_TYPE_IDR) {
+                for (int i = 0; i < ctx->nb_global_params; i++) {
+                    if (ctx->global_params_type[i] == VAEncMiscParameterTypeRateControl) {
+                        VAEncMiscParameterRateControl *rc_param = (VAEncMiscParameterRateControl *)ctx->global_params[i];
+                        rc_param->bits_per_second = rc_bits_per_second;
+                        rc_param->target_percentage = rc_target_percentage;
+                        break;
+                    }
+                }
+            } else {
+                err = vaapi_encode_make_misc_param_buffer(avctx, base_pic->priv,
+                                                          VAEncMiscParameterTypeRateControl,
+                                                          &ctx->rc_params,
+                                                          sizeof(ctx->rc_params));
+            }
+            ctx->va_bit_rate = rc_bits_per_second;
+        }
+    }
+    return err;
+}
+//-MT add
+
 static int vaapi_encode_issue(AVCodecContext *avctx,
                               FFHWBaseEncodePicture *base_pic)
 {
@@ -345,6 +407,12 @@ static int vaapi_encode_issue(AVCodecContext *avctx,
         if (err < 0)
             goto fail;
     }
+
+    //+MT add: update bitrate dynamically when it changed
+    if (ff_vaapi_encode_update_br(avctx, base_pic)) {
+        av_log(avctx, AV_LOG_WARNING, "Failed to update bit-rate when br change!\n");
+    }
+    //-MT add
 
     if (base_pic->type == FF_HW_PICTURE_TYPE_IDR) {
         for (i = 0; i < ctx->nb_global_params; i++) {
@@ -586,6 +654,32 @@ static int vaapi_encode_issue(AVCodecContext *avctx,
             goto fail;
     }
 #endif
+
+    //+MT add: per-block delta QP from frame side data
+#if VA_CHECK_VERSION(1, 15, 0)
+    sd = av_frame_get_side_data(base_pic->input_image,
+                                AV_FRAME_DATA_QP_DELTA_MAP);
+    if (sd && ctx->enc_per_block_control_allowed) {
+        int w = base_pic->input_image->width / ctx->delta_qp_block_size;
+        int h = base_pic->input_image->height / ctx->delta_qp_block_size;
+
+        if (base_pic->input_image->width % ctx->delta_qp_block_size)
+            w += 1;
+        if (base_pic->input_image->height % ctx->delta_qp_block_size)
+            h += 1;
+        if (w * h != sd->size) {
+            av_log(avctx, AV_LOG_ERROR, "w: %d, h: %d, sd data size: %zu\n", w, h, sd->size);
+            goto fail;
+        }
+        err = vaapi_encode_make_param_buffer(avctx, pic,
+                                             VAEncDeltaQpPerBlockBufferType,
+                                             sd->data,
+                                             sd->size);
+        if (err < 0)
+            goto fail;
+    }
+#endif
+    //-MT add
 
     vas = vaBeginPicture(ctx->hwctx->display, ctx->va_context,
                          pic->input_surface);
@@ -902,6 +996,7 @@ static const VAAPIEncodeRTFormat vaapi_encode_rt_formats[] = {
     { "YUV400",    VA_RT_FORMAT_YUV400,        8, 1,      },
     { "YUV420",    VA_RT_FORMAT_YUV420,        8, 3, 1, 1 },
     { "YUV422",    VA_RT_FORMAT_YUV422,        8, 3, 1, 0 },
+    { "YUV440",    VA_RT_FORMAT_YUV422,        8, 3, 0, 1 },
 #if VA_CHECK_VERSION(1, 2, 0)
     { "YUV420_12", VA_RT_FORMAT_YUV420_12,    12, 3, 1, 1 },
     { "YUV422_10", VA_RT_FORMAT_YUV422_10,    10, 3, 1, 0 },
@@ -915,6 +1010,7 @@ static const VAAPIEncodeRTFormat vaapi_encode_rt_formats[] = {
 #if VA_CHECK_VERSION(0, 38, 1)
     { "YUV420_10", VA_RT_FORMAT_YUV420_10BPP, 10, 3, 1, 1 },
 #endif
+    { "RGBA",      VA_RT_FORMAT_RGB32,         8, 4, 0, 0 },
 };
 
 static const VAEntrypoint vaapi_encode_entrypoints_normal[] = {
@@ -2053,6 +2149,89 @@ static av_cold int vaapi_encode_init_roi(AVCodecContext *avctx)
     return 0;
 }
 
+//+MT add: query per-block delta QP capability
+static av_cold int vaapi_encode_init_delta_qp_perblock(AVCodecContext *avctx)
+{
+#if VA_CHECK_VERSION(1, 15, 0)
+    VAAPIEncodeContext *ctx = avctx->priv_data;
+    VAStatus vas;
+    VAConfigAttrib attr = { VAConfigAttribEncPerBlockControl };
+
+    vas = vaGetConfigAttributes(ctx->hwctx->display,
+                                ctx->va_profile,
+                                ctx->va_entrypoint,
+                                &attr, 1);
+    if (vas != VA_STATUS_SUCCESS) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to query encoder per block control "
+               "config attribute: %d (%s).\n", vas, vaErrorStr(vas));
+        return AVERROR_EXTERNAL;
+    }
+
+    if (attr.value == VA_ATTRIB_NOT_SUPPORTED) {
+        ctx->enc_per_block_control_allowed = 0;
+    } else {
+        VAConfigAttribValEncPerBlockControl block_control = {
+            .value = attr.value,
+        };
+
+        ctx->enc_per_block_control_allowed = block_control.bits.delta_qp_support;
+        ctx->delta_qp_block_size = 1 << block_control.bits.log2_delta_qp_block_size;
+    }
+#endif
+    return 0;
+}
+
+av_cold int ff_vaapi_encoder_get_block_size(AVCodecContext *avctx)
+{
+    VAAPIEncodeContext *ctx = avctx->priv_data;
+    if (ctx)
+        return ctx->delta_qp_block_size;
+    else
+        return 0;
+}
+
+static av_cold int vaapi_encode_init_intra_refresh_param(AVCodecContext *avctx)
+{
+    VAAPIEncodeContext *ctx = avctx->priv_data;
+    VAStatus vas;
+    VAConfigAttrib attr = { VAConfigAttribEncIntraRefresh };
+
+    vas = vaGetConfigAttributes(ctx->hwctx->display,
+                                ctx->va_profile,
+                                ctx->va_entrypoint,
+                                &attr, 1);
+    if (vas != VA_STATUS_SUCCESS) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to query intra refresh "
+               "config attribute: %d (%s).\n", vas, vaErrorStr(vas));
+        return AVERROR_EXTERNAL;
+    }
+
+    if (attr.value == VA_ATTRIB_NOT_SUPPORTED) {
+        av_log(avctx, AV_LOG_WARNING, "Driver doesnt support intra refrsh");
+        ctx->intra_refresh_mode = 0;
+        ctx->intra_refresh_arg = 1;
+    } else {
+        ctx->ir_params = (VAEncMiscParameterRIR){
+            .rir_flags.bits.enable_rir_column = ctx->intra_refresh_mode == 2,
+            .rir_flags.bits.enable_rir_row = ctx->intra_refresh_mode == 1,
+            .rir_flags.bits.reserved = ctx->intra_refresh_arg,
+        };
+
+        av_log(avctx, AV_LOG_DEBUG, "Intra_refresh_mode:%d intra_refresh_arg:%d\n",
+               ctx->intra_refresh_mode, ctx->intra_refresh_arg);
+        av_log(avctx, AV_LOG_DEBUG, "Enable_rir_column:%d enable_rir_row:%d\n",
+               ctx->ir_params.rir_flags.bits.enable_rir_column,
+               ctx->ir_params.rir_flags.bits.enable_rir_row);
+
+        vaapi_encode_add_global_param(avctx,
+                                      VAEncMiscParameterTypeRIR,
+                                      &ctx->ir_params,
+                                      sizeof(ctx->ir_params));
+    }
+    return 0;
+}
+//-MT add
+
 static void vaapi_encode_free_output_buffer(AVRefStructOpaque opaque,
                                             void *obj)
 {
@@ -2166,6 +2345,10 @@ av_cold int ff_vaapi_encode_init(AVCodecContext *avctx)
     if (err < 0)
         goto fail;
 
+    //+MT add: pass temporal layer count down to the base encode context
+    base_ctx->nb_temporal_layers = ctx->nb_temporal_layers;
+    //-MT add
+
     ctx->va_config  = VA_INVALID_ID;
     ctx->va_context = VA_INVALID_ID;
 
@@ -2214,6 +2397,16 @@ av_cold int ff_vaapi_encode_init(AVCodecContext *avctx)
     err = vaapi_encode_init_roi(avctx);
     if (err < 0)
         goto fail;
+
+    //+MT add
+    err = vaapi_encode_init_intra_refresh_param(avctx);
+    if (err < 0)
+        goto fail;
+
+    err = vaapi_encode_init_delta_qp_perblock(avctx);
+    if (err < 0)
+        goto fail;
+    //-MT add
 
     if (avctx->compression_level >= 0) {
         err = vaapi_encode_init_quality(avctx);

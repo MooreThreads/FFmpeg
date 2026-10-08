@@ -1375,6 +1375,12 @@ static int ist_add(const OptionsContext *o, Demuxer *d, AVStream *st, AVDictiona
                 "with old commandlines. This behaviour is DEPRECATED and will be removed "
                 "in the future. Please explicitly set \"-hwaccel_output_format cuda\".\n");
             ds->dec_opts.hwaccel_output_format = AV_PIX_FMT_CUDA;
+        } else if (!hwaccel_output_format && hwaccel && !strcmp(hwaccel, "muvid")) {
+            av_log(ist, AV_LOG_WARNING,
+                "WARNING: defaulting hwaccel_output_format to musa for compatibility "
+                "with muvid commandlines. Please explicitly set "
+                "\"-hwaccel_output_format musa\".\n");
+            ds->dec_opts.hwaccel_output_format = AV_PIX_FMT_MUSA;
         } else if (!hwaccel_output_format && hwaccel && !strcmp(hwaccel, "qsv")) {
             av_log(ist, AV_LOG_WARNING,
                 "WARNING: defaulting hwaccel_output_format to qsv for compatibility "
@@ -1399,6 +1405,9 @@ static int ist_add(const OptionsContext *o, Demuxer *d, AVStream *st, AVDictiona
             // The NVDEC hwaccels use a CUDA device, so remap the name here.
             if (!strcmp(hwaccel, "nvdec") || !strcmp(hwaccel, "cuvid"))
                 hwaccel = "cuda";
+            // The MTDEC hwaccels use a MUSA device, so remap the name here.
+            if (!strcmp(hwaccel, "mtdec") || !strcmp(hwaccel, "muvid"))
+                hwaccel = "musa";
 
             if (!strcmp(hwaccel, "none"))
                 ds->dec_opts.hwaccel_id = HWACCEL_NONE;

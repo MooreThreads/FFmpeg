@@ -499,6 +499,13 @@ enum AVPixelFormat {
 
     AV_PIX_FMT_OHCODEC, /// hardware decoding through openharmony
 
+    /**
+     * musify: MUSA MT video hardware frames (parallel to AV_PIX_FMT_CUDA).
+     * Net-additive — existing enum values unchanged. data[0] is an MUdeviceptr.
+     * See MUSIFY.md `## Knowledge Base` [Round 1].
+     */
+    AV_PIX_FMT_MUSA,
+
     AV_PIX_FMT_NB         ///< number of pixel formats, DO NOT USE THIS if you want to link with shared libav* because the number of formats might differ between versions
 };
 

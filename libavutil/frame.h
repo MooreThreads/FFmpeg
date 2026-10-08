@@ -259,7 +259,13 @@ enum AVFrameSideDataType {
      * Extensible image file format metadata. The payload is a buffer containing
      * EXIF metadata, starting with either 49 49 2a 00, or 4d 4d 00 2a.
      */
-     AV_FRAME_DATA_EXIF,
+    AV_FRAME_DATA_EXIF,
+
+    /**
+     * Qp offset map matrix of frame.
+     * The mt vaapi encoder delta QP range from -32 to 31.
+     */
+    AV_FRAME_DATA_QP_DELTA_MAP,
 };
 
 enum AVActiveFormatDescription {
