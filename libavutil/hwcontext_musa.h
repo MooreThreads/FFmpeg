@@ -40,7 +40,7 @@ typedef struct AVMUSADeviceContextInternal AVMUSADeviceContextInternal;
  * This struct is allocated as AVHWDeviceContext.hwctx
  */
 typedef struct AVMUSADeviceContext {
-    MUcontext cuda_ctx;
+    MUcontext musa_ctx;
     MUstream stream;
     AVMUSADeviceContextInternal *internal;
 } AVMUSADeviceContext;
@@ -50,7 +50,7 @@ typedef struct AVMUSADeviceContext {
  */
 
 /**
- * @defgroup hwcontext_cuda Device context creation flags
+ * @defgroup hwcontext_musa Device context creation flags
  *
  * Flags for av_hwdevice_ctx_create.
  *

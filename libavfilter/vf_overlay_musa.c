@@ -232,7 +232,7 @@ static int overlay_musa_blend(FFFrameSync *fs)
     FilterLink *inl = ff_filter_link(inlink);
 
     MusaFunctions *mu = ctx->hwctx->internal->cuda_dl;
-    MUcontext dummy, cuda_ctx = ctx->hwctx->cuda_ctx;
+    MUcontext dummy, cuda_ctx = ctx->hwctx->musa_ctx;
 
     AVFrame *input_main, *input_overlay;
 
@@ -476,7 +476,7 @@ static int overlay_musa_config_output(AVFilterLink *outlink)
         return AVERROR(ENOMEM);
     ctx->hwctx = ((AVHWDeviceContext*)ctx->hw_device_ctx->data)->hwctx;
 
-    cuda_ctx = ctx->hwctx->cuda_ctx;
+    cuda_ctx = ctx->hwctx->musa_ctx;
     ctx->fs.time_base = inlink->time_base;
 
     ctx->cu_stream = ctx->hwctx->stream;

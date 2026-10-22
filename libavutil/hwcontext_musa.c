@@ -102,7 +102,7 @@ static void cuda_buffer_free(void *opaque, uint8_t *data)
 
     MUcontext dummy;
 
-    CHECK_MU(mu->muCtxPushCurrent(hwctx->cuda_ctx));
+    CHECK_MU(mu->muCtxPushCurrent(hwctx->musa_ctx));
 
     CHECK_MU(mu->muMemFree((MUdeviceptr)data));
 
@@ -121,7 +121,7 @@ static AVBufferRef *cuda_pool_alloc(void *opaque, size_t size)
     MUdeviceptr data;
     int err;
 
-    err = CHECK_MU(mu->muCtxPushCurrent(hwctx->cuda_ctx));
+    err = CHECK_MU(mu->muCtxPushCurrent(hwctx->musa_ctx));
     if (err < 0)
         return NULL;
 
@@ -264,7 +264,7 @@ static int cuda_transfer_data(AVHWFramesContext *ctx, AVFrame *dst,
                i, src->data[i], src->linesize[i], dst->data[i], dst->linesize[i]);
     }
 
-    ret = CHECK_MU(mu->muCtxPushCurrent(hwctx->cuda_ctx));
+    ret = CHECK_MU(mu->muCtxPushCurrent(hwctx->musa_ctx));
     if (ret < 0)
         return ret;
 
@@ -381,13 +381,13 @@ static void cuda_device_uninit(AVHWDeviceContext *device_ctx)
     if (hwctx->p.internal) {
         MusaFunctions *mu = hwctx->internal.cuda_dl;
 
-        if (hwctx->internal.is_allocated && hwctx->p.cuda_ctx) {
+        if (hwctx->internal.is_allocated && hwctx->p.musa_ctx) {
             if (hwctx->internal.flags & AV_MUSA_USE_PRIMARY_CONTEXT)
                 CHECK_MU(mu->muDevicePrimaryCtxRelease(hwctx->internal.cuda_device));
             else if (!(hwctx->internal.flags & AV_MUSA_USE_CURRENT_CONTEXT))
-                CHECK_MU(mu->muCtxDestroy(hwctx->p.cuda_ctx));
+                CHECK_MU(mu->muCtxDestroy(hwctx->p.musa_ctx));
 
-            hwctx->p.cuda_ctx = NULL;
+            hwctx->p.musa_ctx = NULL;
         }
 
         musa_free_functions(&hwctx->internal.cuda_dl);
@@ -447,17 +447,17 @@ static int cuda_context_init(AVHWDeviceContext *device_ctx, int flags) {
                 return ret;
         }
 
-        ret = CHECK_MU(mu->muDevicePrimaryCtxRetain(&hwctx->cuda_ctx,
+        ret = CHECK_MU(mu->muDevicePrimaryCtxRetain(&hwctx->musa_ctx,
                                                     hwctx->internal->cuda_device));
         if (ret < 0)
             return ret;
     } else if (flags & AV_MUSA_USE_CURRENT_CONTEXT) {
-        ret = CHECK_MU(mu->muCtxGetCurrent(&hwctx->cuda_ctx));
+        ret = CHECK_MU(mu->muCtxGetCurrent(&hwctx->musa_ctx));
         if (ret < 0)
             return ret;
         av_log(device_ctx, AV_LOG_INFO, "Using current CUDA context.\n");
     } else {
-        ret = CHECK_MU(mu->muCtxCreate(&hwctx->cuda_ctx, desired_flags,
+        ret = CHECK_MU(mu->muCtxCreate(&hwctx->musa_ctx, desired_flags,
                                        hwctx->internal->cuda_device));
         if (ret < 0)
             return ret;

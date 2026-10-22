@@ -10,6 +10,7 @@ cd "$(dirname "$0")/.."
 CONFIGURE_FLAGS="
   --disable-doc
   --disable-everything
+  --enable-shared
   --enable-avutil
   --enable-avcodec
   --enable-avformat

@@ -831,7 +831,7 @@ static av_cold int nvenc_setup_device(AVCodecContext *avctx)
         }
 
         if (cuda_device_hwctx) {
-            ctx->cu_context = cuda_device_hwctx->cuda_ctx;
+            ctx->cu_context = cuda_device_hwctx->musa_ctx;
             ctx->cu_stream = cuda_device_hwctx->stream;
         }
 #if CONFIG_D3D11VA
