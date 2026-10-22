@@ -131,7 +131,7 @@ static void filter(AVFilterContext *ctx, AVFrame *dst,
     MUcontext dummy;
     int i, ret;
 
-    ret = CHECK_MU(mu->muCtxPushCurrent(s->hwctx->cuda_ctx));
+    ret = CHECK_MU(mu->muCtxPushCurrent(s->hwctx->musa_ctx));
     if (ret < 0)
         return;
 
@@ -203,7 +203,7 @@ static av_cold void deint_musa_uninit(AVFilterContext *ctx)
 
     if (s->hwctx && s->cu_module) {
         MusaFunctions *mu = s->hwctx->internal->cuda_dl;
-        CHECK_MU(mu->muCtxPushCurrent(s->hwctx->cuda_ctx));
+        CHECK_MU(mu->muCtxPushCurrent(s->hwctx->musa_ctx));
         CHECK_MU(mu->muModuleUnload(s->cu_module));
         CHECK_MU(mu->muCtxPopCurrent(&dummy));
     }
@@ -301,7 +301,7 @@ static int config_output(AVFilterLink *link)
         goto exit;
     }
 
-    ret = CHECK_MU(mu->muCtxPushCurrent(s->hwctx->cuda_ctx));
+    ret = CHECK_MU(mu->muCtxPushCurrent(s->hwctx->musa_ctx));
     if (ret < 0)
         goto exit;
 

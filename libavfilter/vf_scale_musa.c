@@ -146,7 +146,7 @@ static av_cold void musascale_uninit(AVFilterContext *ctx)
         MusaFunctions *mu = s->hwctx->internal->cuda_dl;
         MUcontext dummy;
 
-        CHECK_MU(mu->muCtxPushCurrent(s->hwctx->cuda_ctx));
+        CHECK_MU(mu->muCtxPushCurrent(s->hwctx->musa_ctx));
         CHECK_MU(mu->muModuleUnload(s->cu_module));
         s->cu_module = NULL;
         CHECK_MU(mu->muCtxPopCurrent(&dummy));
@@ -297,7 +297,7 @@ static av_cold int init_processing_chain(AVFilterContext *ctx, int in_width, int
 static av_cold int musascale_load_functions(AVFilterContext *ctx)
 {
     MUSAScaleContext *s = ctx->priv;
-    MUcontext dummy, cuda_ctx = s->hwctx->cuda_ctx;
+    MUcontext dummy, cuda_ctx = s->hwctx->musa_ctx;
     MusaFunctions *mu = s->hwctx->internal->cuda_dl;
     char buf[128];
     int ret;
@@ -472,7 +472,7 @@ static int scalemusa_resize(AVFilterContext *ctx,
 {
     MUSAScaleContext *s = ctx->priv;
     MusaFunctions *mu = s->hwctx->internal->cuda_dl;
-    MUcontext dummy, cuda_ctx = s->hwctx->cuda_ctx;
+    MUcontext dummy, cuda_ctx = s->hwctx->musa_ctx;
     int i, ret;
     int mpeg_range = in->color_range != AVCOL_RANGE_JPEG;
 
@@ -602,7 +602,7 @@ static int musascale_filter_frame(AVFilterLink *link, AVFrame *in)
         goto fail;
     }
 
-    ret = CHECK_MU(mu->muCtxPushCurrent(s->hwctx->cuda_ctx));
+    ret = CHECK_MU(mu->muCtxPushCurrent(s->hwctx->musa_ctx));
     if (ret < 0)
         goto fail;
 

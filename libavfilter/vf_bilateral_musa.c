@@ -76,7 +76,7 @@ static av_cold void musabilateral_uninit(AVFilterContext *ctx)
         MusaFunctions *mu = s->hwctx->internal->cuda_dl;
         MUcontext bilateral;
 
-        CHECK_MU(mu->muCtxPushCurrent(s->hwctx->cuda_ctx));
+        CHECK_MU(mu->muCtxPushCurrent(s->hwctx->musa_ctx));
         CHECK_MU(mu->muStreamSynchronize(s->cu_stream));
         CHECK_MU(mu->muModuleUnload(s->cu_module));
         s->cu_module = NULL;
@@ -145,7 +145,7 @@ static av_cold int init_processing_chain(AVFilterContext *ctx, int width, int he
 static av_cold int musa_bilateral_load_functions(AVFilterContext *ctx)
 {
     MUSABilateralContext *s = ctx->priv;
-    MUcontext bilateral, cuda_ctx = s->hwctx->cuda_ctx;
+    MUcontext bilateral, cuda_ctx = s->hwctx->musa_ctx;
     MusaFunctions *mu = s->hwctx->internal->cuda_dl;
     int ret;
 
@@ -247,7 +247,7 @@ static int musa_bilateral_process_internal(AVFilterContext *ctx,
 {
     MUSABilateralContext *s = ctx->priv;
     MusaFunctions *mu = s->hwctx->internal->cuda_dl;
-    MUcontext bilateral, cuda_ctx = s->hwctx->cuda_ctx;
+    MUcontext bilateral, cuda_ctx = s->hwctx->musa_ctx;
     int i, ret;
 
     MUtexObject tex[3] = { 0, 0, 0 };
@@ -321,7 +321,7 @@ static int musa_bilateral_filter_frame(AVFilterLink *link, AVFrame *in)
         goto fail;
     }
 
-    ret = CHECK_MU(mu->muCtxPushCurrent(s->hwctx->cuda_ctx));
+    ret = CHECK_MU(mu->muCtxPushCurrent(s->hwctx->musa_ctx));
     if (ret < 0)
         goto fail;
 

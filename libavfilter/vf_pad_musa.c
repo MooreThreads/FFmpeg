@@ -284,7 +284,7 @@ static av_cold void musa_pad_uninit(AVFilterContext *ctx)
     if (s->hwctx && s->cu_module) {
         MusaFunctions *mu = s->hwctx->internal->cuda_dl;
         AVMUSADeviceContext *device_hwctx = s->hwctx;
-        CHECK_MU(mu->muCtxPushCurrent(s->hwctx->cuda_ctx));
+        CHECK_MU(mu->muCtxPushCurrent(s->hwctx->musa_ctx));
         CHECK_MU(mu->muStreamSynchronize(device_hwctx->stream));
         CHECK_MU(mu->muModuleUnload(s->cu_module));
         CHECK_MU(mu->muCtxPopCurrent(&dummy));
@@ -308,7 +308,7 @@ static av_cold int musa_pad_load_functions(AVFilterContext *ctx)
     extern const unsigned char ff_vf_pad_musa_mu_data[];
     extern const unsigned int ff_vf_pad_musa_mu_len;
 
-    ret = CHECK_MU(mu->muCtxPushCurrent(device_hwctx->cuda_ctx));
+    ret = CHECK_MU(mu->muCtxPushCurrent(device_hwctx->musa_ctx));
     if (ret < 0)
         return ret;
 
@@ -556,7 +556,7 @@ static int musa_pad_filter_frame(AVFilterLink *inlink, AVFrame *in)
 
     MUcontext dummy;
     ret = CHECK_MU(device_hwctx->internal->cuda_dl->muCtxPushCurrent(
-        device_hwctx->cuda_ctx));
+        device_hwctx->musa_ctx));
     if (ret < 0) {
         av_frame_free(&out);
         av_frame_free(&in);

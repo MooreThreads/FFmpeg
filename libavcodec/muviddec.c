@@ -492,7 +492,7 @@ static int cuvid_decode_packet(AVCodecContext *avctx, const AVPacket *avpkt)
     CuvidContext *ctx = avctx->priv_data;
     AVHWDeviceContext *device_ctx = (AVHWDeviceContext*)ctx->hwdevice->data;
     AVMUSADeviceContext *device_hwctx = device_ctx->hwctx;
-    MUcontext dummy, cuda_ctx = device_hwctx->cuda_ctx;
+    MUcontext dummy, cuda_ctx = device_hwctx->musa_ctx;
     MUVIDSOURCEDATAPACKET cupkt;
     int ret = 0, eret = 0, is_flush = ctx->decoder_flushing;
 
@@ -562,7 +562,7 @@ static int cuvid_output_frame(AVCodecContext *avctx, AVFrame *frame)
     CuvidContext *ctx = avctx->priv_data;
     AVHWDeviceContext *device_ctx = (AVHWDeviceContext*)ctx->hwdevice->data;
     AVMUSADeviceContext *device_hwctx = device_ctx->hwctx;
-    MUcontext dummy, cuda_ctx = device_hwctx->cuda_ctx;
+    MUcontext dummy, cuda_ctx = device_hwctx->musa_ctx;
     CuvidParsedFrame parsed_frame;
     MUdeviceptr mapped_frame = 0;
     int ret = 0, eret = 0;
@@ -764,7 +764,7 @@ static av_cold int cuvid_decode_end(AVCodecContext *avctx)
     CuvidContext *ctx = avctx->priv_data;
     AVHWDeviceContext *device_ctx = ctx->hwdevice ? (AVHWDeviceContext *)ctx->hwdevice->data : NULL;
     AVMUSADeviceContext *device_hwctx = device_ctx ? device_ctx->hwctx : NULL;
-    MUcontext dummy, cuda_ctx = device_hwctx ? device_hwctx->cuda_ctx : NULL;
+    MUcontext dummy, cuda_ctx = device_hwctx ? device_hwctx->musa_ctx : NULL;
 
     av_fifo_freep2(&ctx->frame_queue);
 
@@ -1046,7 +1046,7 @@ static av_cold int cuvid_decode_init(AVCodecContext *avctx)
     device_ctx = hwframe_ctx->device_ctx;
     device_hwctx = device_ctx->hwctx;
 
-    cuda_ctx = device_hwctx->cuda_ctx;
+    cuda_ctx = device_hwctx->musa_ctx;
     ctx->cudl = device_hwctx->internal->cuda_dl;
 
     memset(&ctx->cuparseinfo, 0, sizeof(ctx->cuparseinfo));
@@ -1198,7 +1198,7 @@ static void cuvid_flush(AVCodecContext *avctx)
     CuvidContext *ctx = avctx->priv_data;
     AVHWDeviceContext *device_ctx = (AVHWDeviceContext*)ctx->hwdevice->data;
     AVMUSADeviceContext *device_hwctx = device_ctx->hwctx;
-    MUcontext dummy, cuda_ctx = device_hwctx->cuda_ctx;
+    MUcontext dummy, cuda_ctx = device_hwctx->musa_ctx;
     MUVIDSOURCEDATAPACKET seq_pkt = { 0 };
     int ret;
 

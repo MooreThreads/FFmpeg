@@ -202,7 +202,7 @@ static int nvdec_decoder_create(NVDECDecoder **out, AVBufferRef *hw_device_ref,
         ret = AVERROR(ENOMEM);
         goto fail;
     }
-    decoder->cuda_ctx = device_hwctx->cuda_ctx;
+    decoder->cuda_ctx = device_hwctx->musa_ctx;
     decoder->cudl = device_hwctx->internal->cuda_dl;
     decoder->stream = device_hwctx->stream;
 

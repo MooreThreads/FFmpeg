@@ -291,7 +291,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
     // keep a reference of each frame
     s->frames[s->n].buf = frame;
 
-    ret = CHECK_MU(mu->muCtxPushCurrent(s->hwctx->cuda_ctx));
+    ret = CHECK_MU(mu->muCtxPushCurrent(s->hwctx->musa_ctx));
     if (ret < 0)
         return ret;
 
@@ -354,7 +354,7 @@ static av_cold void uninit(AVFilterContext *ctx)
         MUcontext dummy;
         int ret;
 
-        ret = CHECK_MU(mu->muCtxPushCurrent(s->hwctx->cuda_ctx));
+        ret = CHECK_MU(mu->muCtxPushCurrent(s->hwctx->musa_ctx));
         if (ret >= 0) {
             CHECK_MU(mu->muStreamSynchronize(s->cu_stream));
             if (s->data) {
@@ -416,7 +416,7 @@ static int config_props(AVFilterLink *inlink)
     ThumbnailMUSAContext *s = ctx->priv;
     AVHWFramesContext     *hw_frames_ctx = (AVHWFramesContext*)inl->hw_frames_ctx->data;
     AVMUSADeviceContext *device_hwctx = hw_frames_ctx->device_ctx->hwctx;
-    MUcontext dummy, cuda_ctx = device_hwctx->cuda_ctx;
+    MUcontext dummy, cuda_ctx = device_hwctx->musa_ctx;
     MusaFunctions *mu = device_hwctx->internal->cuda_dl;
     int ret, pop_ret;
 
